@@ -667,6 +667,19 @@ function normalizeMenuUrl(v){
 }
 const storeRefs=()=>{ const c=state.current; return c?((storeById(c.storeId)||{}).refUrls||[]):[]; };
 const curOwn=()=>{ const st=state.cur; return !!(st.files.length||st.text.trim()); };
+// 店舗トップなどのURLから、読むべきメニューページを並べる（料理とドリンクが別ページのサイトに対応）
+function menuPageUrls(raw){
+  const v=normalizeMenuUrl(raw); let u; try{ u=new URL(v); }catch(e){ return [v]; }
+  const base=u.origin+u.pathname.replace(/\/?$/,"/");
+  if(/(^|\.)tabelog\.com$/i.test(u.hostname)){
+    if(/\/dtlmenu\/$/.test(base)) return [base,base+"drink/"];
+  }
+  if(/(^|\.)hotpepper\.jp$/i.test(u.hostname)){
+    const m=u.pathname.match(/^\/(strJ\d+)\/?$/i);
+    if(m) return [`${u.origin}/${m[1]}/food/`,`${u.origin}/${m[1]}/drink/`];
+  }
+  return [v];
+}
 const urlOnly=side=>{ const st=state[side]; return !!(st.url||"").trim()&&!(st.webText||"").trim(); };
 const srcNames=side=>{ const st=state[side]; if(side==="cur"&&!curOwn()&&!(st.webText||"").trim()&&!(st.url||"").trim()&&st.items){ const b=(state.sites||[]).find(x=>x.status==="ok"&&(x.items||[]).length); return b?[`${b.label}（自動）`]:[]; } return [...st.files.map(f=>f.name),...(st.text.trim()?["貼り付けテキスト"]:[]),...((st.webText||"").trim()||(st.url||"").trim()?[st.url||"グルメサイト"]:[])]; };
 const leftCount=()=>state.diff?state.diff.rows.filter(r=>!state.done.has(r.id)).length:0;
@@ -1313,8 +1326,10 @@ function renderSites(){
     const kinds=d&&d.rows.length?Object.entries(KIND).map(([k,[l,c]])=>{ const n=d.rows.filter(r=>r.kinds.includes(k)).length; return n?`<span class="kind ${c}">${l} ${n}</span>`:""; }).join(""):"";
     const body=x.status!=="ok"?`<p class="site-err">${esc(x.message||"ページを取得できませんでした。")}</p>`
       :!d?`<p class="note">新メニューを読み取ると照合結果が出ます。</p>`
-      :!d.rows.length?`<p class="note">掲載内容は新メニューと一致しています（${(x.items||[]).length}商品）。</p>`
+      :!d.rows.length?`<p class="note">掲載内容は新メニューと一致しています（${(x.items||[]).length}商品）。</p>${x.message?`<p class="site-err">一部のページは取得できませんでした：${esc(x.message)}</p>`:""}`
       :`<p class="note">このサイトに掲載中の ${(x.items||[]).length} 商品と新メニューを、価格・商品名・掲載の有無で比べた結果です（カテゴリの分け方と説明文はサイトごとに違うため除いています）。左が「サイトの掲載」、右が「新メニュー」です。</p>
+        ${(x.pages||[]).length>1?`<p class="note">読み込んだページ：${x.pages.map(u=>`<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(u.replace(/^https?:\/\/[^/]+/,""))}</a>`).join("、")}</p>`:""}
+        ${x.message?`<p class="site-err">一部のページは取得できませんでした：${esc(x.message)}</p>`:""}
         <div class="tablewrap"><table><thead><tr><th>種別</th><th>カテゴリ</th><th>サイトの掲載</th><th>新メニュー</th></tr></thead><tbody>${d.rows.map(r=>`<tr><td><div class="kinds">${r.kinds.map(k=>`<span class="kind ${KIND[k][1]}">${KIND[k][0]}</span>`).join("")}</div></td><td class="cat">${esc((r.new||r.old).category)}</td><td>${siteCell(r.old,r,"site")}</td><td>${siteCell(r.new,r,"new")}</td></tr>`).join("")}</tbody></table></div>`;
     return `<details class="site" ${d&&d.rows.length&&i===0?"open":""}><summary>
       <span class="site-name"><span class="caret">▶</span>${esc(x.label)}</span>
@@ -1685,9 +1700,15 @@ $("#run").onclick=async()=>{
       const out=new Array(refs.length); let next=0, doneN=0;
       step(`グルメサイトを読み込んでいます（0/${refs.length}）`);
       const worker=async()=>{ while(next<refs.length){ const i=next++; const r=refs[i]; const url=normalizeMenuUrl(r.url);
-        try{ const res=await callExtract({url},signal); out[i]={label:r.label,url:r.url,status:"ok",items:cleanItems(res&&res.items),title:(res&&res.page_title)||"",checkedAt:Date.now()}; }
-        catch(e){ if(e&&e.code==="cancelled") throw e; if(e&&(e.code==="no_api_key"||e.code==="bad_api_key"||e.code==="forbidden"||e.code==="session_expired")) throw e;
-          out[i]={label:r.label,url:r.url,status:"error",message:(e&&e.message)||"ページを取得できませんでした。",items:[],checkedAt:Date.now()}; }
+        const pages=menuPageUrls(r.url); let its=[], errs=[], okPages=0;
+        for(const pu of pages){
+          try{ const res=await callExtract({url:pu},signal); its=its.concat(cleanItems(res&&res.items)); okPages++; }
+          catch(e){ if(e&&e.code==="cancelled") throw e; if(e&&(e.code==="no_api_key"||e.code==="bad_api_key"||e.code==="forbidden"||e.code==="session_expired")) throw e;
+            errs.push(`${pu}：${(e&&e.message)||"ページを取得できませんでした。"}`); }
+        }
+        const seen=new Set(); its=its.filter(it=>{ const k=norm(it.name)+"|"+it.price; if(seen.has(k)) return false; seen.add(k); return true; });
+        out[i]=okPages?{label:r.label,url:r.url,status:"ok",items:its,pages,message:errs.join("\n"),checkedAt:Date.now()}
+          :{label:r.label,url:r.url,status:"error",pages,message:errs.join("\n")||"ページを取得できませんでした。",items:[],checkedAt:Date.now()};
         doneN++; step(`グルメサイトを読み込んでいます（${doneN}/${refs.length}）`); } };
       await Promise.all([worker(),worker()]);
       state.sites=out; sitesChecked=true;
