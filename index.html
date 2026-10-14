@@ -227,7 +227,8 @@ header p{margin:0;color:var(--muted);max-width:52ch}
 .side[data-side="new"] .tag{background:var(--shu-soft);color:var(--shu)}
 .side-head h2{font-size:1.15rem}
 .side-head .sub{color:var(--muted);font-size:.82rem;margin-left:auto}
-.tabs{display:flex;gap:2px;padding:12px 18px 0;border-bottom:1px solid var(--line);overflow-x:auto}
+.tabs{display:flex;gap:2px;padding:12px 18px 0;border-bottom:1px solid var(--line);overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
+.tabs::-webkit-scrollbar{display:none}
 .tabs button{background:none;border:0;padding:8px 12px;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-1px;white-space:nowrap;font-weight:500}
 .tabs button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--ink)}
 .pane{padding:16px 18px;display:flex;flex-direction:column;gap:10px}
@@ -624,7 +625,8 @@ async function toImagePayload(blob){
 /* ---------- stores → records ---------- */
 const fmtDate=t=>{ if(!t) return ""; const d=new Date(t),p=x=>String(x).padStart(2,"0"); return `${d.getFullYear()}/${p(d.getMonth()+1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`; };
 const plain=items=>items.map(x=>({category:x.category||"",name:x.name||"",price:x.price??null,description:x.description||""}));
-const srcNames=side=>{ const st=state[side]; return [...st.files.map(f=>f.name),...(st.text.trim()?["貼り付けテキスト"]:[]),...((st.webText||"").trim()?[st.url||"グルメサイト"]:[])]; };
+const urlOnly=side=>{ const st=state[side]; return !!(st.url||"").trim()&&!(st.webText||"").trim(); };
+const srcNames=side=>{ const st=state[side]; return [...st.files.map(f=>f.name),...(st.text.trim()?["貼り付けテキスト"]:[]),...((st.webText||"").trim()||(st.url||"").trim()?[st.url||"グルメサイト"]:[])]; };
 const leftCount=()=>state.diff?state.diff.rows.filter(r=>!state.done.has(r.id)).length:0;
 const summaryOf=()=>({diffCount:state.diff?state.diff.rows.length:null,leftCount:state.diff?leftCount():null,sameCount:state.diff?state.diff.same.length:null});
 const storeById=id=>hist.stores.find(s=>s.id===id);
@@ -886,20 +888,23 @@ function renderSide(side){
         <input type="file" id="file-${side}" multiple hidden accept=".xlsx,.xls,.csv,.tsv,.txt,.docx,.pdf,.jpg,.jpeg,.png,.webp,.gif">
       </label>
       <ul class="files">${st.files.map((f,i)=>`<li><span title="${esc(f.name)}">${esc(f.name)}</span><em>${(f.size/1024).toFixed(0)}KB</em><button class="x" data-rm="${i}" aria-label="${esc(f.name)}を外す">×</button></li>`).join("")}</ul>`;
+    const frefs=side==="cur"&&state.current&&!st.files.length&&!st.text.trim()&&!st.items?((storeById(state.current.storeId)||{}).refUrls||[]):[];
+    if(frefs.length) pane+=`<div class="ref-pick">現行メニューの資料がない場合は、参考サイトから読み込めます：${frefs.map((r,i)=>`<button type="button" data-refuse="${i}" title="${esc(r.url)}">${esc(r.label)}</button>`).join("")}</div>`;
   }else if(st.tab==="web"){
     const refs=(state.current&&(storeById(state.current.storeId)||{}).refUrls)||[];
-    pane=`<label class="hint" for="url-${side}">グルメサイトのメニューページURL（記録用）</label>
+    pane=`<label class="hint" for="url-${side}">メニューページのURL（「相違箇所を抽出する」で自動で読み込みます）</label>
       ${refs.length?`<div class="ref-pick">店舗の参考サイト：${refs.map((r,i)=>`<button type="button" data-refpick="${i}" title="${esc(r.url)}">${esc(r.label)}</button>`).join("")}</div>`:""}
       <input type="url" id="url-${side}" placeholder="https://tabelog.com/…/dtlmenu/" value="${esc(st.url)}">
       ${st.url?`<a class="linkout" href="${esc(st.url)}" target="_blank" rel="noopener">このページを開く ↗</a>`:""}
-      <ol class="steps"><li>メニューページを開き、全選択（Ctrl/⌘+A）してコピー</li><li>下の欄に貼り付け</li><li>写真メニューの場合はスクリーンショットを「ファイル」に追加</li></ol>
-      <textarea id="web-${side}" placeholder="ページからコピーした文字をここに貼り付け">${esc(st.webText)}</textarea>`;
+      <p class="hint">自動で読み込めないサイトや、メニューが写真のページは、次のどちらかで対応してください。</p>
+      <ol class="steps"><li>ページを開いて全選択（Ctrl/⌘+A）・コピーし、下の欄に貼り付け（貼り付けた場合はこちらを優先）</li><li>スクリーンショットを「ファイル」タブに追加</li></ol>
+      <textarea id="web-${side}" placeholder="（任意）ページからコピーした文字を貼り付け">${esc(st.webText)}</textarea>`;
   }else{
     pane=`<textarea id="text-${side}" placeholder="メニューの文字をそのまま貼り付け（例：生ビール（中）　580円）">${esc(st.text)}</textarea>
       <p class="hint">メールや依頼書に書かれた変更内容でも構いません。</p>`;
   }
   const n=st.items?st.items.length:null;
-  const srcCount=st.files.length+(st.text.trim()?1:0)+((st.webText||"").trim()?1:0);
+  const srcCount=st.files.length+(st.text.trim()?1:0)+((st.webText||"").trim()||(st.url||"").trim()?1:0);
   el.innerHTML=`<div class="side-head"><span class="tag">${cfg.tag}</span><h2>${cfg.label}</h2><span class="sub">${cfg.sub}</span></div>
     <div class="tabs" role="tablist">${tabs}</div>
     <div class="pane">${pane}</div>
@@ -937,8 +942,10 @@ function bindSide(side){
   el.querySelectorAll("[data-rm]").forEach(b=>b.onclick=e=>{e.preventDefault();st.files.splice(+b.dataset.rm,1);invalidate(side);});
   const ta=$("#text-"+side,el); if(ta) ta.oninput=()=>{st.text=ta.value;invalidate(side,true);};
   const wt=$("#web-"+side,el); if(wt) wt.oninput=()=>{st.webText=wt.value;invalidate(side,true);};
-  const u=$("#url-"+side,el); if(u) u.onchange=()=>{st.url=u.value.trim();renderSide(side);};
-  el.querySelectorAll("[data-refpick]").forEach(b=>b.onclick=()=>{ const refs=(storeById(state.current.storeId)||{}).refUrls||[]; const r=refs[+b.dataset.refpick]; if(r){ st.url=r.url; renderSide(side); } });
+  const u=$("#url-"+side,el); if(u) u.onchange=()=>{ let v=u.value.trim(); if(v&&!/^https?:\/\//i.test(v)) v="https://"+v; st.url=v; invalidate(side); };
+  const pickRef=i=>{ const refs=(storeById(state.current.storeId)||{}).refUrls||[]; const r=refs[i]; if(r){ st.url=r.url; st.tab="web"; invalidate(side); } };
+  el.querySelectorAll("[data-refpick]").forEach(b=>b.onclick=()=>pickRef(+b.dataset.refpick));
+  el.querySelectorAll("[data-refuse]").forEach(b=>b.onclick=()=>pickRef(+b.dataset.refuse));
   // inline edits of extracted rows
   el.querySelectorAll("details.extract td[contenteditable]").forEach(td=>{
     td.onblur=()=>{
@@ -968,7 +975,7 @@ function invalidate(side,soft){
   if(state.sample){ state.sample=false; state.diff=null; state.done.clear(); renderSide(side==="cur"?"new":"cur"); }
   if(soft){ // keep focus in textarea: update footer only
     const el=$("#side-"+side+" .side-foot");
-    const srcCount=st.files.length+(st.text.trim()?1:0)+((st.webText||"").trim()?1:0);
+    const srcCount=st.files.length+(st.text.trim()?1:0)+((st.webText||"").trim()||(st.url||"").trim()?1:0);
     if(el) el.innerHTML=srcCount?`<span>資料 <b class="num">${srcCount}</b> 件　未読み取り</span>`:`<span>資料が未登録です</span>`;
     const ex=$("#side-"+side+" details.extract"); if(ex) ex.parentElement.remove();
   } else renderSide(side);
@@ -1065,8 +1072,16 @@ function parsePrice(s){ if(s==null) return null; const m=String(s).normalize("NF
 
 async function extractSide(side,signal,onStep){
   const {texts,images,notes}=await readSources(side,signal,onStep);
-  if(!texts.length&&!images.length) throw {code:"no_source",message:`${SIDES[side].label}：読み取れる資料がありません。`+(notes.length?"\n"+notes.join("\n"):"")};
+  const pageUrl=urlOnly(side)?state[side].url.trim():"";
+  if(!texts.length&&!images.length&&!pageUrl) throw {code:"no_source",message:`${SIDES[side].label}：読み取れる資料がありません。`+(notes.length?"\n"+notes.join("\n"):"")};
   let items=[];
+  if(pageUrl){
+    onStep(`${SIDES[side].label}：Webページを取得して読み取っています`);
+    const r=await callExtract({url:pageUrl},signal);
+    items=items.concat(cleanItems(r&&r.items));
+    if(r&&r.truncated) notes.push("ページが長いため、読み取りが途中で切れた可能性があります。読み取り結果を確認してください。");
+    if(r&&!(r.items||[]).length) notes.push("ページからメニューを見つけられませんでした。メニューのページURLか確認してください。");
+  }
   // text in chunks
   const joined=texts.map(t=>`### 資料：${t.label}\n${t.text}`).join("\n\n");
   const CH=60000;
@@ -1090,7 +1105,7 @@ async function extractSide(side,signal,onStep){
   const seen=new Set(); items=items.filter(it=>{const k=norm(it.name)+"|"+it.price; if(seen.has(k)) return false; seen.add(k); return true;});
   return {items,notes};
 }
-function sourceSig(side){ const st=state[side]; return JSON.stringify([st.files.map(f=>f.name+f.size+f.lastModified),st.text,st.webText]); }
+function sourceSig(side){ const st=state[side]; return JSON.stringify([st.files.map(f=>f.name+f.size+f.lastModified),st.text,st.webText,st.url]); }
 
 /* ---------- diff ---------- */
 function norm(s){
@@ -1423,7 +1438,7 @@ let tt; function toast(m){ let t=$(".toast"); if(!t){t=document.createElement("d
 
 /* ---------- run ---------- */
 let ctl=null;
-function hasSource(side){ const st=state[side]; return st.files.length||st.text.trim()||(st.webText||"").trim()||st.items; }
+function hasSource(side){ const st=state[side]; return st.files.length||st.text.trim()||(st.webText||"").trim()||(st.url||"").trim()||st.items; }
 function renderRunState(){
   const btn=$("#run"), pg=$("#progress");
   if(ctl) return;
@@ -1444,7 +1459,7 @@ $("#run").onclick=async()=>{
     for(const side of ["cur","new"]){
       const st=state[side]; const sig=sourceSig(side);
       if(st.items&&st.sig===sig) continue;
-      if(!st.files.length&&!st.text.trim()&&!(st.webText||"").trim()&&st.items) continue; // edited manually
+      if(!st.files.length&&!st.text.trim()&&!(st.webText||"").trim()&&!(st.url||"").trim()&&st.items) continue; // edited manually
       const {items,notes}=await extractSide(side,signal,step);
       st.items=items; st.sig=sig; allNotes.push(...notes); extracted=true;
       renderSide(side);

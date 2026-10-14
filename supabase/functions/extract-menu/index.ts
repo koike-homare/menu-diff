@@ -17,6 +17,7 @@ const RULES = `あなたは飲食店のメニュー表を正確にデータ化�
 - 店名、住所、営業時間、サービス料の案内など、商品でないものは含めない
 - 推測で補ったり言い換えたりしない。表記どおりに写す
 - 資料が「変更依頼」の文面なら、記載された商品だけを抜き出す
+- 資料がWebページの場合、ページ内のメニュー部分だけを対象にし、口コミ・広告・他店の情報・ナビゲーションは無視する
 返答はJSONのみ: {"items":[{"category":"前菜","name":"枝豆","price":380,"price_text":"380円","description":""}]}`;
 
 const json = (body: unknown, status = 200) =>
@@ -30,6 +31,72 @@ function parseItems(text: string): { items: unknown[] } | null {
   if (Array.isArray(v)) return { items: v };
   if (v && Array.isArray(v.items)) return v;
   return null;
+}
+
+/* ---- グルメサイト等のページ取得 ---- */
+// 社内ネットワークやクラウド内部のアドレスへの取得を防ぐ
+function isBlockedHost(host: string): boolean {
+  const h = host.toLowerCase().replace(/^\[|\]$/g, "");
+  if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".local") || h.endsWith(".internal") || h === "metadata.google.internal") return true;
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(h)) {
+    const [a, b] = h.split(".").map(Number);
+    if (a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127)) return true;
+  }
+  if (h.includes(":")) return true; // IPv6 リテラルは許可しない
+  return false;
+}
+
+function decodeEntities(s: string): string {
+  return s.replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (m, e) => {
+    const k = e.toLowerCase();
+    if (k[0] === "#") { const n = k[1] === "x" ? parseInt(k.slice(2), 16) : parseInt(k.slice(1), 10); return Number.isFinite(n) ? String.fromCodePoint(n) : m; }
+    return ({ amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", yen: "¥", copy: "©" } as Record<string, string>)[k] ?? m;
+  });
+}
+
+function htmlToText(html: string): { title: string; text: string } {
+  const title = decodeEntities((html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || "").trim());
+  let t = html
+    .replace(/<(script|style|noscript|svg|iframe|template)[\s\S]*?<\/\1>/gi, " ")
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<(br|hr)\b[^>]*>/gi, "\n")
+    .replace(/<\/(p|div|li|tr|h[1-6]|section|article|dt|dd|table|ul|ol|header|footer)>/gi, "\n")
+    .replace(/<\/(td|th)>/gi, "\t")
+    .replace(/<img\b[^>]*\balt="([^"]*)"[^>]*>/gi, " $1 ")
+    .replace(/<[^>]+>/g, " ");
+  t = decodeEntities(t).replace(/[ \t\u3000]+/g, " ").replace(/ *\n */g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  return { title, text: t };
+}
+
+async function fetchPage(raw: string): Promise<{ title: string; text: string; url: string }> {
+  let url: URL;
+  try { url = new URL(raw); } catch { throw { code: "bad_url", message: "URLの形式が正しくありません。" }; }
+  for (let hop = 0; hop < 4; hop++) {
+    if (!/^https?:$/.test(url.protocol) || (url.port && !["80", "443"].includes(url.port)) || isBlockedHost(url.hostname)) {
+      throw { code: "bad_url", message: "このURLは読み込めません。" };
+    }
+    let res: Response;
+    try {
+      res = await fetch(url.toString(), {
+        redirect: "manual",
+        signal: AbortSignal.timeout(15000),
+        headers: { "User-Agent": "Mozilla/5.0 (compatible; MenuDiffChecker/1.0)", "Accept": "text/html,application/xhtml+xml", "Accept-Language": "ja,en;q=0.5" },
+      });
+    } catch { throw { code: "fetch_failed", message: "ページを取得できませんでした。時間をおいて試すか、ページの文字をコピーして貼り付けてください。" }; }
+    if (res.status >= 300 && res.status < 400 && res.headers.get("location")) { url = new URL(res.headers.get("location")!, url); continue; }
+    if (!res.ok) throw { code: "fetch_failed", message: `ページを取得できませんでした（サイトの応答 ${res.status}）。サイト側で自動取得が制限されている可能性があります。ページの文字をコピーして貼り付けるか、スクリーンショットを読み込んでください。` };
+    const ctype = res.headers.get("content-type") || "";
+    if (!/html|text\/plain/i.test(ctype)) throw { code: "fetch_failed", message: "このURLはWebページではないため読み込めません。" };
+    const buf = new Uint8Array(await res.arrayBuffer()).slice(0, 4_000_000);
+    let cs = (ctype.match(/charset=([\w-]+)/i)?.[1] || "").toLowerCase();
+    if (!cs) { const head = new TextDecoder("latin1").decode(buf.slice(0, 4000)); cs = (head.match(/<meta[^>]+charset=["']?([\w-]+)/i)?.[1] || "utf-8").toLowerCase(); }
+    let html: string;
+    try { html = new TextDecoder(cs).decode(buf); } catch { html = new TextDecoder("utf-8").decode(buf); }
+    const page = htmlToText(html);
+    if (page.text.replace(/\s/g, "").length < 50) throw { code: "fetch_failed", message: "ページから文字を取り出せませんでした。メニューが画像の場合は、スクリーンショットを読み込んでください。" };
+    return { ...page, url: url.toString() };
+  }
+  throw { code: "fetch_failed", message: "転送が多すぎるため、ページを取得できませんでした。" };
 }
 
 function serviceKey(): string {
@@ -55,9 +122,20 @@ Deno.serve(async (req) => {
   const key = Deno.env.get("ANTHROPIC_API_KEY");
   if (!key) return json({ code: "no_api_key", message: "読み取り用のClaude APIキーがまだ設定されていません。管理者に設定を依頼してください。" }, 503);
 
-  let body: { text?: string; images?: { media_type: string; data: string }[]; labels?: string };
+  let body: { text?: string; url?: string; images?: { media_type: string; data: string }[]; labels?: string };
   try { body = await req.json(); } catch { return json({ code: "bad_request", message: "送信内容を読み取れませんでした。" }, 400); }
-  const text = String(body.text || "").slice(0, 200000);
+  let text = String(body.text || "").slice(0, 200000);
+  let pageTitle = "";
+  if (body.url) {
+    try {
+      const page = await fetchPage(String(body.url));
+      pageTitle = page.title;
+      text = `### 資料：Webページ「${page.title}」（${page.url}）\n${page.text.slice(0, 150000)}`;
+    } catch (e) {
+      const err = e as { code?: string; message?: string };
+      return json({ code: err.code || "fetch_failed", message: err.message || "ページを取得できませんでした。" }, 422);
+    }
+  }
   const images = (Array.isArray(body.images) ? body.images : []).slice(0, 8)
     .filter((im) => im && typeof im.data === "string" && /^image\/(jpeg|png|webp|gif)$/.test(im.media_type));
   if (!text.trim() && !images.length) return json({ code: "bad_request", message: "読み取る資料がありません。" }, 400);
@@ -104,5 +182,5 @@ Deno.serve(async (req) => {
   } catch (_) { /* 記録に失敗しても読み取り結果は返す */ }
 
   if (!parsed) return json({ code: "invalid_json", message: "読み取り結果をうまく整理できませんでした。もう一度お試しください。" }, 502);
-  return json({ items: parsed.items, truncated: out.stop_reason === "max_tokens" });
+  return json({ items: parsed.items, truncated: out.stop_reason === "max_tokens", page_title: pageTitle || undefined });
 });
