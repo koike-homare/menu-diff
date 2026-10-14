@@ -133,6 +133,24 @@ body{background:var(--paper);color:var(--ink);font-family:var(--font-body);font-
 .srcnames{display:block;width:100%;font-size:.76rem;color:var(--muted);overflow-wrap:anywhere}
 .btn.dark{background:var(--ink);color:var(--paper);border-color:var(--ink);font-weight:700}
 
+/* 参考サイト */
+.refcard{padding:16px 18px;display:flex;flex-direction:column;gap:10px}
+.ref-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px}
+.ref-head h2{font-size:1.02rem;font-weight:800}
+.ref-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.ref-item{display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--line);border-radius:5px;background:var(--paper);min-width:0}
+.ref-item .ref-label{font-weight:700;font-size:.86rem;white-space:nowrap}
+.ref-item a{color:var(--name);font-size:.82rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1 1 auto}
+.ref-item .x{flex:none}
+.ref-empty{font-size:.82rem;color:var(--muted)}
+.ref-add{display:flex;flex-wrap:wrap;gap:8px}
+.ref-add #ref-url{flex:3 1 280px;width:auto}
+.ref-add #ref-label{flex:1 1 140px;width:auto}
+.ref-msg{font-size:.8rem;color:var(--shu);min-height:0}
+.ref-msg:empty{display:none}
+.ref-pick{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:.8rem;color:var(--muted)}
+.ref-pick button{border:1px solid var(--line-strong);background:var(--surface);border-radius:999px;padding:3px 10px;cursor:pointer;font-size:.78rem;color:var(--ink)}
+.ref-pick button:hover{border-color:var(--ink)}
 /* list views: 店舗一覧 / レコード一覧 */
 .view{display:flex;flex-direction:column;gap:24px}
 .listcard{background:var(--surface);border:1px solid var(--line);border-radius:6px;min-width:0}
@@ -416,6 +434,16 @@ details.extract th{position:sticky;top:0}
   </section>
 
   <section class="view" id="view-store" aria-label="メニュー変更レコード一覧" hidden>
+    <div class="listcard refcard">
+      <div class="ref-head"><h2>参考サイト</h2><span class="rl-sub">グルメサイトや公式サイトなど、この店舗のメニュー確認に使うページ</span></div>
+      <ul class="ref-list" id="ref-list"></ul>
+      <form class="ref-add" id="ref-add">
+        <input class="in" id="ref-url" type="text" inputmode="url" autocomplete="url" placeholder="URL（例：https://tabelog.com/…/dtlmenu/）" aria-label="参考サイトのURL">
+        <input class="in" id="ref-label" placeholder="表示名（空欄なら自動）" aria-label="表示名">
+        <button class="btn" type="submit">登録</button>
+      </form>
+      <div class="ref-msg" id="ref-msg" aria-live="polite"></div>
+    </div>
     <div class="listcard">
       <div class="list-tools">
         <form class="addform wide" id="rc-add">
@@ -605,8 +633,8 @@ const who=email=>!email||email===CFG.sharedEmail?"":String(email).split("@")[0];
 const ts=v=>v?Date.parse(v):null;
 
 async function loadStores(){
-  const {data,error}=await sb.from("stores").select("id,name,last_title,last_at,created_at").order("last_at",{ascending:false});
-  if(error){ hist.error=true; } else { hist.error=false; hist.stores=data.map(s=>({id:s.id,name:s.name,lastTitle:s.last_title,lastAt:ts(s.last_at)})); }
+  const {data,error}=await sb.from("stores").select("id,name,last_title,last_at,created_at,ref_urls").order("last_at",{ascending:false});
+  if(error){ hist.error=true; } else { hist.error=false; hist.stores=data.map(s=>({id:s.id,name:s.name,lastTitle:s.last_title,lastAt:ts(s.last_at),refUrls:Array.isArray(s.ref_urls)?s.ref_urls:[]})); }
   hist.loaded=true;
 }
 async function loadRecords(id){
@@ -622,7 +650,7 @@ function renderView(){
   $("#view-record").hidden=state.view!=="record";
   renderHeader();
   if(state.view==="stores") renderStoreRows();
-  if(state.view==="store") renderRecordRows();
+  if(state.view==="store"){ renderRecordRows(); renderRefs(); }
 }
 async function go(view,storeId){
   flushNow();
@@ -741,6 +769,35 @@ function statusBadge(r){
   if(r.diffCount==null) return `<span class="st st-todo">未着手</span>`;
   return `<span class="st st-open">未確認 ${r.leftCount??r.diffCount}</span><span class="rl-sub">変更 ${r.diffCount}商品</span>`;
 }
+/* 参考サイト */
+const SITE_NAMES=[[/tabelog\.com/,"食べログ"],[/gnavi\.co\.jp/,"ぐるなび"],[/hotpepper\.jp/,"ホットペッパーグルメ"],[/retty\.me/,"Retty"],[/(google\.[a-z.]+\/maps|maps\.app\.goo\.gl|goo\.gl\/maps)/,"Googleマップ"],[/instagram\.com/,"Instagram"],[/(twitter|x)\.com/,"X"],[/ubereats\.com/,"Uber Eats"],[/demae-can\.com/,"出前館"]];
+function autoLabel(u){ for(const [re,n] of SITE_NAMES) if(re.test(u)) return n; try{ return new URL(u).hostname.replace(/^www\./,""); }catch(e){ return "参考サイト"; } }
+function renderRefs(){
+  const st=storeById(hist.storeId), el=$("#ref-list"); if(!el) return;
+  const refs=st&&st.refUrls||[];
+  el.innerHTML=refs.length?refs.map((r,i)=>`<li class="ref-item"><span class="ref-label">${esc(r.label)}</span><a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer" title="${esc(r.url)}">${esc(r.url)}</a><button class="x" type="button" data-refdel="${i}" aria-label="${esc(r.label)}を削除">×</button></li>`).join("")
+    :`<li class="ref-empty">まだ登録されていません。下の欄にURLを入れて「登録」を押してください。</li>`;
+  el.querySelectorAll("[data-refdel]").forEach(b=>b.onclick=()=>saveRefs(refs.filter((_,i)=>i!==+b.dataset.refdel),"削除しました"));
+  $("#ref-msg").textContent="";
+}
+async function saveRefs(next,okMsg){
+  const st=storeById(hist.storeId); if(!st) return false;
+  const {error}=await sb.from("stores").update({ref_urls:next}).eq("id",st.id);
+  if(error){ $("#ref-msg").textContent="保存できませんでした。もう一度お試しください。"; return false; }
+  st.refUrls=next; renderRefs(); if(okMsg) toast(okMsg); return true;
+}
+$("#ref-add").onsubmit=async e=>{
+  e.preventDefault();
+  const st=storeById(hist.storeId); if(!st) return;
+  let url=$("#ref-url").value.trim(); const msg=$("#ref-msg");
+  if(!url){ $("#ref-url").focus(); return; }
+  if(!/^https?:\/\//i.test(url)) url="https://"+url;
+  try{ const u=new URL(url); if(!/^https?:$/.test(u.protocol)) throw 0; }catch(_){ msg.textContent="URLの形式が正しくありません。https:// から始まるアドレスを入れてください。"; return; }
+  if((st.refUrls||[]).some(r=>r.url===url)){ msg.textContent="このURLはすでに登録されています。"; return; }
+  if((st.refUrls||[]).length>=30){ msg.textContent="登録できるのは30件までです。"; return; }
+  const label=$("#ref-label").value.trim()||autoLabel(url);
+  if(await saveRefs([...(st.refUrls||[]),{label,url}],"参考サイトを登録しました")){ $("#ref-url").value=""; $("#ref-label").value=""; }
+};
 function renderRecordRows(){
   const el=$("#rc-list");
   if(!hist.recLoaded){ el.innerHTML=`<li class="empty">読み込み中…</li>`; return; }
@@ -830,7 +887,9 @@ function renderSide(side){
       </label>
       <ul class="files">${st.files.map((f,i)=>`<li><span title="${esc(f.name)}">${esc(f.name)}</span><em>${(f.size/1024).toFixed(0)}KB</em><button class="x" data-rm="${i}" aria-label="${esc(f.name)}を外す">×</button></li>`).join("")}</ul>`;
   }else if(st.tab==="web"){
+    const refs=(state.current&&(storeById(state.current.storeId)||{}).refUrls)||[];
     pane=`<label class="hint" for="url-${side}">グルメサイトのメニューページURL（記録用）</label>
+      ${refs.length?`<div class="ref-pick">店舗の参考サイト：${refs.map((r,i)=>`<button type="button" data-refpick="${i}" title="${esc(r.url)}">${esc(r.label)}</button>`).join("")}</div>`:""}
       <input type="url" id="url-${side}" placeholder="https://tabelog.com/…/dtlmenu/" value="${esc(st.url)}">
       ${st.url?`<a class="linkout" href="${esc(st.url)}" target="_blank" rel="noopener">このページを開く ↗</a>`:""}
       <ol class="steps"><li>メニューページを開き、全選択（Ctrl/⌘+A）してコピー</li><li>下の欄に貼り付け</li><li>写真メニューの場合はスクリーンショットを「ファイル」に追加</li></ol>
@@ -879,6 +938,7 @@ function bindSide(side){
   const ta=$("#text-"+side,el); if(ta) ta.oninput=()=>{st.text=ta.value;invalidate(side,true);};
   const wt=$("#web-"+side,el); if(wt) wt.oninput=()=>{st.webText=wt.value;invalidate(side,true);};
   const u=$("#url-"+side,el); if(u) u.onchange=()=>{st.url=u.value.trim();renderSide(side);};
+  el.querySelectorAll("[data-refpick]").forEach(b=>b.onclick=()=>{ const refs=(storeById(state.current.storeId)||{}).refUrls||[]; const r=refs[+b.dataset.refpick]; if(r){ st.url=r.url; renderSide(side); } });
   // inline edits of extracted rows
   el.querySelectorAll("details.extract td[contenteditable]").forEach(td=>{
     td.onblur=()=>{
