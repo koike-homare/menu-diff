@@ -508,7 +508,7 @@ details.extract th{position:sticky;top:0}
 
 </div>
 <script>window.APP_CONFIG={supabaseUrl:"https://vqxlqoocplcetuklsmyu.supabase.co",supabaseKey:"sb_publishable__lVsDrYCWZ8nQLnaFsPDMw_pDLmZCNi",emailDomain:"8sin.co.jp",sharedEmail:"menu-team@8sin.co.jp",
-  version:"1.15",built:"2026/10/14 20:55"};</script>
+  version:"1.16",built:"2026/10/14 21:05"};</script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.3.0/exceljs.min.js"></script>
@@ -1311,13 +1311,9 @@ function recompute(rerenderSides,side){
 // グルメサイトはカテゴリの分け方や説明文の書き方が店舗資料と違うため、照合は価格・商品名・掲載有無で行う
 const SITE_CMP={cat:false,desc:false};
 function curFromSite(){ const c=state.current; return ((c&&c.sources&&c.sources.cur)||[]).some(x=>/（自動）$/.test(x))||(!curOwn()&&!!state.cur.items&&(state.sites||[]).some(x=>x.status==="ok")); }
-function cmpOpts(){
-  if(state.cmp) return state.cmp;
-  const a=itemsOf("cur"), b=itemsOf("new"), has=(list,f)=>list.some(x=>String(x[f]||"").trim());
-  const auto=!curFromSite();
-  // 片方の資料にカテゴリ（説明）がまったくない場合は、その項目を比べない
-  return {cat:auto&&has(a,"category")&&has(b,"category"),desc:auto&&has(a,"description")&&has(b,"description")};
-}
+// 既定はカテゴリの違いを除き、説明・表記の違いは表示する（画面のチェックで切り替え可）
+const CMP_DEFAULT={cat:false,desc:true};
+function cmpOpts(){ return state.cmp||CMP_DEFAULT; }
 function filterDiff(d,o){
   if(o.cat&&o.desc) return d;
   const rows=[], same=[...d.same];
@@ -1411,8 +1407,6 @@ function renderResults(){
     <div class="chips-label cmp-row"><span>変更の内訳</span>
       <label><input type="checkbox" class="chk" id="cmp-cat" ${cmpOpts().cat?"checked":""}>カテゴリの違いも表示</label>
       <label><input type="checkbox" class="chk" id="cmp-desc" ${cmpOpts().desc?"checked":""}>説明・表記の違いも表示</label>
-      ${!state.cmp&&curFromSite()?`<span class="cmp-note">変更前がグルメサイトのため、最初はカテゴリ・説明の違いを除いています</span>`
-        :!state.cmp&&(!cmpOpts().cat||!cmpOpts().desc)?`<span class="cmp-note">片方の資料にない項目（${[!cmpOpts().cat?"カテゴリ":"",!cmpOpts().desc?"説明":""].filter(Boolean).join("・")}）は比べていません</span>`:""}
     </div>
     <div class="chips" role="group" aria-label="変更の内訳で絞り込み">
       <button class="chip" data-k="all" aria-pressed="${state.filter==="all"}"><span class="n">${counts.all}</span>すべて</button>
