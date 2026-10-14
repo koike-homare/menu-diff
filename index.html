@@ -133,6 +133,28 @@ body{background:var(--paper);color:var(--ink);font-family:var(--font-body);font-
 .srcnames{display:block;width:100%;font-size:.76rem;color:var(--muted);overflow-wrap:anywhere}
 .btn.dark{background:var(--ink);color:var(--paper);border-color:var(--ink);font-weight:700}
 
+/* グルメサイトの照合 */
+.sites .res-head h2 small{white-space:nowrap}
+.site-list{display:flex;flex-direction:column}
+.site{border-top:1px solid var(--line)}
+.site>summary{list-style:none;cursor:pointer;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 16px;align-items:center;padding:12px 20px}
+.site>summary::-webkit-details-marker{display:none}
+.site>summary:hover{background:var(--paper)}
+.site-name{font-weight:700;display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
+.site-name .caret{color:var(--muted);font-size:.65rem;transition:transform .15s}
+.site[open] .caret{transform:rotate(90deg)}
+.site-url{grid-column:1;font-size:.76rem;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.site-url a{color:var(--name)}
+.site-state{grid-row:1/span 2;grid-column:2;display:flex;flex-direction:column;align-items:flex-end;gap:4px}
+.site-kinds{display:flex;flex-wrap:wrap;gap:4px;justify-content:flex-end}
+.site-body{padding:0 20px 14px}
+.site-body .note{font-size:.82rem;color:var(--muted);margin:0 0 8px}
+.site-body table td{padding:5px 10px;vertical-align:middle}
+.site-body .was{color:var(--muted)}
+.site-body .now{color:var(--shu);font-weight:700}
+.site-err{font-size:.82rem;color:var(--shu)}
+.cur-sites{font-size:.8rem;color:var(--muted);margin:0;line-height:1.7}
+.cur-sites b{color:var(--ink);font-weight:500}
 /* 参考サイト */
 .refcard{padding:16px 18px;display:flex;flex-direction:column;gap:10px}
 .ref-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px}
@@ -470,6 +492,7 @@ details.extract th{position:sticky;top:0}
   </div>
 
   <section class="results" id="results" aria-label="変更商品一覧"></section>
+  <section class="results sites" id="sites" aria-label="グルメサイトの照合" hidden></section>
 
   </div>
 </div>
@@ -493,7 +516,7 @@ const yen=n=>n==null||n===""||isNaN(n)?"—":"¥"+Number(n).toLocaleString("ja-J
 
 /* ---------- state ---------- */
 const SIDES={
-  cur:{label:"現行メニュー",tag:"変更前",sub:"いま掲載・使用中のもの",tabs:[["file","ファイル"],["web","グルメサイト"],["text","テキスト貼り付け"]]},
+  cur:{label:"現行メニュー",tag:"変更前",sub:"いま掲載・使用中のもの",tabs:[["file","ファイル"],["text","テキスト貼り付け"]]},
   new:{label:"新メニュー",tag:"変更後",sub:"制作部のデザイン・店舗の依頼データ",tabs:[["file","ファイル"],["text","テキスト貼り付け"]]}
 };
 const state={
@@ -637,8 +660,10 @@ function normalizeMenuUrl(v){
     u.hash=""; return u.toString().replace(/\?$/,"");
   }catch(e){ return v; }
 }
+const storeRefs=()=>{ const c=state.current; return c?((storeById(c.storeId)||{}).refUrls||[]):[]; };
+const curOwn=()=>{ const st=state.cur; return !!(st.files.length||st.text.trim()); };
 const urlOnly=side=>{ const st=state[side]; return !!(st.url||"").trim()&&!(st.webText||"").trim(); };
-const srcNames=side=>{ const st=state[side]; return [...st.files.map(f=>f.name),...(st.text.trim()?["貼り付けテキスト"]:[]),...((st.webText||"").trim()||(st.url||"").trim()?[st.url||"グルメサイト"]:[])]; };
+const srcNames=side=>{ const st=state[side]; if(side==="cur"&&!curOwn()&&!(st.webText||"").trim()&&!(st.url||"").trim()&&st.items){ const b=(state.sites||[]).find(x=>x.status==="ok"&&(x.items||[]).length); return b?[`${b.label}（自動）`]:[]; } return [...st.files.map(f=>f.name),...(st.text.trim()?["貼り付けテキスト"]:[]),...((st.webText||"").trim()||(st.url||"").trim()?[st.url||"グルメサイト"]:[])]; };
 const leftCount=()=>state.diff?state.diff.rows.filter(r=>!state.done.has(r.id)).length:0;
 const summaryOf=()=>({diffCount:state.diff?state.diff.rows.length:null,leftCount:state.diff?leftCount():null,sameCount:state.diff?state.diff.same.length:null});
 const storeById=id=>hist.stores.find(s=>s.id===id);
@@ -652,9 +677,9 @@ async function loadStores(){
   hist.loaded=true;
 }
 async function loadRecords(id){
-  const {data,error}=await sb.from("records").select("id,title,status,diff_count,left_count,created_at,updated_at,created_by_email").eq("store_id",id).order("updated_at",{ascending:false});
+  const {data,error}=await sb.from("records").select("id,title,status,diff_count,left_count,sites_need_update,created_at,updated_at,created_by_email").eq("store_id",id).order("updated_at",{ascending:false});
   if(hist.storeId!==id) return;
-  hist.records=error?[]:data.map(r=>({id:r.id,title:r.title,status:r.status,diffCount:r.diff_count,leftCount:r.left_count,createdAt:ts(r.created_at),updatedAt:ts(r.updated_at),by:r.created_by_email}));
+  hist.records=error?[]:data.map(r=>({id:r.id,title:r.title,status:r.status,diffCount:r.diff_count,leftCount:r.left_count,sitesNeedUpdate:r.sites_need_update,createdAt:ts(r.created_at),updatedAt:ts(r.updated_at),by:r.created_by_email}));
   hist.recLoaded=true;
 }
 
@@ -779,9 +804,10 @@ $("#st-add").onsubmit=async e=>{
 
 /* records list (inside a store) */
 function statusBadge(r){
-  if(r.status==="完了") return `<span class="st st-ok">完了</span>`;
+  const site=r.sitesNeedUpdate?`<span class="st st-open">サイト要更新 ${r.sitesNeedUpdate}</span>`:"";
+  if(r.status==="完了") return `<span class="st st-ok">完了</span>${site}`;
   if(r.diffCount==null) return `<span class="st st-todo">未着手</span>`;
-  return `<span class="st st-open">未確認 ${r.leftCount??r.diffCount}</span><span class="rl-sub">変更 ${r.diffCount}商品</span>`;
+  return `<span class="st st-open">未確認 ${r.leftCount??r.diffCount}</span><span class="rl-sub">変更 ${r.diffCount}商品</span>${site}`;
 }
 /* 参考サイト */
 const SITE_NAMES=[[/tabelog\.com/,"食べログ"],[/gnavi\.co\.jp/,"ぐるなび"],[/hotpepper\.jp/,"ホットペッパーグルメ"],[/retty\.me/,"Retty"],[/(google\.[a-z.]+\/maps|maps\.app\.goo\.gl|goo\.gl\/maps)/,"Googleマップ"],[/instagram\.com/,"Instagram"],[/(twitter|x)\.com/,"X"],[/ubereats\.com/,"Uber Eats"],[/demae-can\.com/,"出前館"]];
@@ -836,14 +862,14 @@ $("#rc-add").onsubmit=async e=>{
 function resetWorkspace(){
   state.cur={tab:"file",files:[],text:"",url:"",webText:"",items:null,sig:""};
   state.new={tab:"file",files:[],text:"",url:"",webText:"",items:null,sig:""};
-  state.done=new Set(); state.diff=null; state.filter="all"; state.sample=false; state.current=null;
+  state.done=new Set(); state.diff=null; state.filter="all"; state.sample=false; state.current=null; state.sites=[];
   $("#progress").textContent=""; saveText="";
 }
 async function openRecord(sid,rid){
   flushNow();
   const [r1,r2]=await Promise.all([
     sb.from("records").select("id,store_id,title,status,sources,created_at").eq("id",rid).maybeSingle(),
-    sb.from("record_items").select("cur_items,new_items,done").eq("record_id",rid).maybeSingle()]);
+    sb.from("record_items").select("cur_items,new_items,done,site_checks").eq("record_id",rid).maybeSingle()]);
   if(r1.error){ toast("レコードを開けませんでした"); return; }
   if(!r1.data){ toast("このレコードは削除されています"); return; }
   const r=r1.data, it=r2.data||{};
@@ -852,6 +878,7 @@ async function openRecord(sid,rid){
   state.cur.items=ci.length?ci.map(x=>({...x})):null;
   state.new.items=ni.length?ni.map(x=>({...x})):null;
   state.done=new Set(it.done||[]);
+  state.sites=Array.isArray(it.site_checks)?it.site_checks:[];
   state.current={storeId:sid,recId:rid,title:r.title,createdAt:ts(r.created_at),status:r.status||"未着手",sources:r.sources||{cur:[],new:[]},hasItemsRow:!!r2.data};
   hist.storeId=sid;
   state.view="record"; hist.renaming=false; hist.confirmDel=false;
@@ -866,7 +893,7 @@ $("#nav-menu").onclick=()=>go("stores");
 
 /* autosave for the open record */
 let pendSum={}, pendItems=false, saveTimer=null, saving=Promise.resolve(), saveText="";
-const SUMCOL={diffCount:"diff_count",leftCount:"left_count",sameCount:"same_count",status:"status",sources:"sources"};
+const SUMCOL={diffCount:"diff_count",leftCount:"left_count",sameCount:"same_count",status:"status",sources:"sources",sitesNeedUpdate:"sites_need_update"};
 function scheduleSave(sum,items){
   if(!state.current||!db) return;
   Object.assign(pendSum,sum||{}); if(items) pendItems=true;
@@ -877,7 +904,7 @@ function flushNow(){
   const c=state.current; if(!c||!db||(!pendItems&&!Object.keys(pendSum).length)) return;
   const now=new Date().toISOString();
   const row={updated_at:now}; Object.entries(pendSum).forEach(([k,v])=>{ if(SUMCOL[k]) row[SUMCOL[k]]=v; });
-  const items=pendItems?{record_id:c.recId,cur_items:plain(itemsOf("cur")),new_items:plain(itemsOf("new")),done:[...state.done],updated_at:now}:null;
+  const items=pendItems?{record_id:c.recId,cur_items:plain(itemsOf("cur")),new_items:plain(itemsOf("new")),done:[...state.done],site_checks:state.sites||[],updated_at:now}:null;
   pendSum={}; pendItems=false;
   saving=saving.then(async()=>{
     if(items){ const {error}=await sb.from("record_items").upsert(items,{onConflict:"record_id"}); if(error) throw error; }
@@ -885,7 +912,7 @@ function flushNow(){
   }).then(()=>setSaveText("自動保存済み"),e=>setSaveText(dbErr(e)));
 }
 function setSaveText(t){ saveText=t; const el=$("#savestate"); if(el) el.textContent=t; }
-function itemsEdited(){ if(state.current) scheduleSave(summaryOf(),true); }
+function itemsEdited(){ if(state.current) scheduleSave({...summaryOf(),sitesNeedUpdate:sitesNeedUpdate()},true); }
 window.addEventListener("beforeunload",()=>flushNow());
 
 /* ---------- side panels ---------- */
@@ -900,8 +927,10 @@ function renderSide(side){
         <input type="file" id="file-${side}" multiple hidden accept=".xlsx,.xls,.csv,.tsv,.txt,.docx,.pdf,.jpg,.jpeg,.png,.webp,.gif">
       </label>
       <ul class="files">${st.files.map((f,i)=>`<li><span title="${esc(f.name)}">${esc(f.name)}</span><em>${(f.size/1024).toFixed(0)}KB</em><button class="x" data-rm="${i}" aria-label="${esc(f.name)}を外す">×</button></li>`).join("")}</ul>`;
-    const frefs=side==="cur"&&state.current&&!st.files.length&&!st.text.trim()&&!st.items?((storeById(state.current.storeId)||{}).refUrls||[]):[];
-    if(frefs.length) pane+=`<div class="ref-pick">現行メニューの資料がない場合は、参考サイトから読み込めます：${frefs.map((r,i)=>`<button type="button" data-refuse="${i}" title="${esc(r.url)}">${esc(r.label)}</button>`).join("")}</div>`;
+    if(side==="cur"&&state.current){
+      const refs=storeRefs();
+      pane+=`<p class="cur-sites">${refs.length?`登録済みのグルメサイト（${refs.map(r=>`<b>${esc(r.label)}</b>`).join("・")}）は自動で照合します。${st.files.length||st.text.trim()||st.items?"":"資料がない場合は、読み込めたサイトの掲載内容を変更前として比べます。"}`:"店舗の画面で参考サイトを登録すると、グルメサイトとの差も自動で照合します。"}</p>`;
+    }
   }else if(st.tab==="web"){
     const refs=(state.current&&(storeById(state.current.storeId)||{}).refUrls)||[];
     pane=`<label class="hint" for="url-${side}">メニューページのURL（「相違箇所を抽出する」で自動で読み込みます）</label>
@@ -914,6 +943,10 @@ function renderSide(side){
   }else{
     pane=`<textarea id="text-${side}" placeholder="メニューの文字をそのまま貼り付け（例：生ビール（中）　580円）">${esc(st.text)}</textarea>
       <p class="hint">メールや依頼書に書かれた変更内容でも構いません。</p>`;
+    if(side==="cur"&&state.current){
+      const refs=storeRefs();
+      if(refs.length) pane+=`<p class="cur-sites">登録済みのグルメサイト（${refs.map(r=>`<b>${esc(r.label)}</b>`).join("・")}）は自動で照合します。</p>`;
+    }
   }
   const n=st.items?st.items.length:null;
   const srcCount=st.files.length+(st.text.trim()?1:0)+((st.webText||"").trim()||(st.url||"").trim()?1:0);
@@ -1182,7 +1215,47 @@ function recompute(rerenderSides,side){
   if(rerenderSides){ renderSide(side); }
   renderResults();
 }
+function siteDiff(site){ const b=itemsOf("new"); return site.status==="ok"&&b.length?computeDiff(site.items||[],b):null; }
+function sitesNeedUpdate(){ return (state.sites||[]).filter(x=>{ const d=siteDiff(x); return d&&d.rows.length; }).length; }
+function siteCell(it,d,side){
+  if(!it) return side==="site"?`<span class="was">掲載なし</span>`:`<span class="was">新メニューにない</span>`;
+  const ch=f=>d&&d.old&&d.new&&(f==="price"?d.kinds.includes("price"):f==="name"?(d.kinds.includes("name")||d.old.name!==d.new.name):f==="cat"?d.kinds.includes("cat"):norm(d.old.description)!==norm(d.new.description));
+  const cls=f=>ch(f)?(side==="site"?"was":"now"):"";
+  const parts=[`<span class="${cls("name")}">${esc(it.name)}</span>`,`<span class="num ${cls("price")}">${yen(it.price)}</span>`];
+  if(ch("desc")) parts.push(`<span class="${cls("desc")}">${esc(it.description)||"（説明なし）"}</span>`);
+  if(ch("cat")) parts.push(`<span class="${cls("cat")}">［${esc(it.category)||"カテゴリなし"}］</span>`);
+  return parts.join("　");
+}
+function renderSites(){
+  const el=$("#sites"); if(!el) return;
+  if(!state.current||state.view!=="record"){ el.hidden=true; return; }
+  el.hidden=false;
+  const refs=storeRefs(), sites=state.sites||[];
+  const head=n=>`<div class="res-head"><h2>グルメサイトの照合${n}</h2></div>`;
+  if(!refs.length&&!sites.length){ el.innerHTML=head("")+`<p class="empty">この店舗には参考サイトが登録されていません。店舗の画面で食べログなどのメニューページを登録すると、新メニューとの差を自動で照合します。</p>`; return; }
+  if(!sites.length){ el.innerHTML=head("")+`<p class="empty">「相違箇所を抽出する」を押すと、登録済みの ${refs.length} サイト（${refs.map(r=>esc(r.label)).join("・")}）の掲載内容を新メニューと照合します。</p>`; return; }
+  const need=sitesNeedUpdate(), okN=sites.filter(x=>x.status==="ok").length;
+  el.innerHTML=head(`<small>新メニューと差のあるサイト <span class="num">${need}</span> ／ ${sites.length}</small>`)+`<div class="site-list">${sites.map((x,i)=>{
+    const d=siteDiff(x);
+    let pill="";
+    if(x.status!=="ok") pill=`<span class="st st-todo">取得できず</span>`;
+    else if(!d) pill=`<span class="st st-todo">新メニュー未読み取り</span>`;
+    else pill=d.rows.length?`<span class="st st-open">要更新 ${d.rows.length}件</span>`:`<span class="st st-ok">一致</span>`;
+    const kinds=d&&d.rows.length?Object.entries(KIND).map(([k,[l,c]])=>{ const n=d.rows.filter(r=>r.kinds.includes(k)).length; return n?`<span class="kind ${c}">${l} ${n}</span>`:""; }).join(""):"";
+    const body=x.status!=="ok"?`<p class="site-err">${esc(x.message||"ページを取得できませんでした。")}</p>`
+      :!d?`<p class="note">新メニューを読み取ると照合結果が出ます。</p>`
+      :!d.rows.length?`<p class="note">掲載内容は新メニューと一致しています（${(x.items||[]).length}商品）。</p>`
+      :`<p class="note">このサイトに掲載中の ${(x.items||[]).length} 商品と新メニューを比べた結果です。左が「サイトの掲載」、右が「新メニュー」です。</p>
+        <div class="tablewrap"><table><thead><tr><th>種別</th><th>カテゴリ</th><th>サイトの掲載</th><th>新メニュー</th></tr></thead><tbody>${d.rows.map(r=>`<tr><td><div class="kinds">${r.kinds.map(k=>`<span class="kind ${KIND[k][1]}">${KIND[k][0]}</span>`).join("")}</div></td><td class="cat">${esc((r.new||r.old).category)}</td><td>${siteCell(r.old,r,"site")}</td><td>${siteCell(r.new,r,"new")}</td></tr>`).join("")}</tbody></table></div>`;
+    return `<details class="site" ${d&&d.rows.length&&i===0?"open":""}><summary>
+      <span class="site-name"><span class="caret">▶</span>${esc(x.label)}</span>
+      <span class="site-url"><a href="${esc(x.url)}" target="_blank" rel="noopener noreferrer" data-stop>${esc(x.url)}</a>${x.checkedAt?`　確認 ${fmtDate(x.checkedAt)}`:""}</span>
+      <span class="site-state">${pill}<span class="site-kinds">${kinds}</span></span>
+    </summary><div class="site-body">${body}</div></details>`;}).join("")}</div>${okN<sites.length?`<p class="empty" style="padding:10px 20px;text-align:left">取得できなかったサイトは、時間をおいて「相違箇所を抽出する」を押し直すか、ページを開いて目視で確認してください。</p>`:""}`;
+  el.querySelectorAll("[data-stop]").forEach(a=>a.onclick=e=>e.stopPropagation());
+}
 function renderResults(){
+  renderSites();
   const el=$("#results"); const d=state.diff;
   if(!d){
     el.innerHTML=`<div class="res-head"><h2>変更商品一覧</h2></div><p class="empty">変更前・変更後の資料を登録して「相違箇所を抽出する」を押すと、ここに変更のあった商品が並びます。</p>`;
@@ -1278,6 +1351,7 @@ function exportBase(){
 /* ---------- Excel export (styled) ---------- */
 function buildXlsx(ExcelJS,ctx){
   const {storeName,title,createdAt,sources,rows,done,newItems,exportedAt}=ctx;
+  const sites=ctx.sites||[];
   const C={ink:"FF1D2227",muted:"FF5B636B",line:"FFCBD0CB",band:"FFF1F3F0",white:"FFFFFFFF",
     shu:"FFC23E28",shuSoft:"FFF8E4DF",add:"FF2C7A4C",addSoft:"FFE1F1E7",del:"FF6A7178",delSoft:"FFECEEEC",
     name:"FF2B57A3",nameSoft:"FFE2EAF7",cat:"FF7748A0",catSoft:"FFEFE6F6",desc:"FF946410",descSoft:"FFF6EDD9"};
@@ -1327,6 +1401,7 @@ function buildXlsx(ExcelJS,ctx){
   s1.mergeCells("B3:E3"); s1.getCell("B3").value=subject; s1.getCell("B3").font=font({size:11,color:{argb:C.muted}});
   const info=[["店舗",storeName||"―"],["レコード",title||"―"],["レコード作成日",fd(createdAt)],["出力日時",fdt(exportedAt)],
     ["変更前の資料",(sources&&sources.cur&&sources.cur.length)?sources.cur.join("、"):"―"],["変更後の資料",(sources&&sources.new&&sources.new.length)?sources.new.join("、"):"―"],
+    ...(sites.length?[["グルメサイト",`新メニューと差のあるサイト ${sites.filter(x=>x.diff&&x.diff.rows.length).length}／${sites.length}（「グルメサイト照合」シート参照）`]]:[]),
     ["確認状況",rows.length?(leftItems?`未確認 ${leftItems}商品（変更 ${rows.length}商品中）`:`すべて確認済み（変更 ${rows.length}商品）`):"変更なし"]];
   let r=5;
   info.forEach(([k,v])=>{ s1.mergeCells(r,3,r,5); const a=s1.getCell(r,2), b=s1.getCell(r,3);
@@ -1437,6 +1512,49 @@ function buildXlsx(ExcelJS,ctx){
       row.getCell(1).font=font({bold:true,size:9,color:{argb:C.del}}); row.getCell(1).fill=fill(C.delSoft); row.getCell(1).alignment={vertical:"middle",horizontal:"center"};
       row.getCell(4).numFmt='"¥"#,##0'; r++; });
   }
+
+  /* ---- sheet 4: グルメサイト照合 ---- */
+  if(sites.length){
+    const s4=wb.addWorksheet("グルメサイト照合",{views:[{state:"frozen",ySplit:3,showGridLines:false}],
+      pageSetup:page({printTitlesRow:"3:3"}),headerFooter:{oddFooter:"&C&P / &N"}});
+    s4.columns=[{width:11},{width:11},{width:22},{width:12},{width:26},{width:26},{width:8}];
+    titleRows(s4,7,`グルメサイト照合　${subject}`,`出力 ${fdt(exportedAt)}　各サイトの掲載内容を新メニューと比べ、サイト側で直すべき箇所を示しています。`);
+    headRow(s4,3,["種別","カテゴリ","商品名","項目","サイトの掲載","新メニュー","差額"]);
+    r=4;
+    sites.forEach(x=>{
+      const d=x.diff;
+      const stateText=x.status!=="ok"?"取得できず":!d?"未照合":d.rows.length?`要更新 ${d.rows.length}件`:"一致";
+      s4.mergeCells(r,1,r,7); const h=s4.getCell(r,1);
+      h.value=`${x.label}　${stateText}　${x.url}`; h.font=font({bold:true,color:{argb:C.white}});
+      h.fill=fill(x.status!=="ok"?C.del:d&&d.rows.length?C.shu:C.add); s4.getRow(r).height=22; h.alignment={vertical:"middle"}; r++;
+      if(x.status!=="ok"||!d||!d.rows.length){
+        s4.mergeCells(r,1,r,7); const m=s4.getCell(r,1);
+        m.value=x.status!=="ok"?(x.message||"ページを取得できませんでした。"):!d?"新メニューが未読み取りのため照合していません。":"掲載内容は新メニューと一致しています。";
+        m.font=font({color:{argb:C.muted}}); m.border=box; s4.getRow(r).height=20; r+=2; return;
+      }
+      d.rows.forEach(dr=>{
+        const it=dr.new||dr.old;
+        lines(dr).forEach(L=>{
+          const row=s4.getRow(r);
+          const before=L.kind==="add"?"掲載なし":L.kind==="del"?L.before.replace("掲載あり","掲載中"):L.before;
+          const after=L.kind==="add"?L.after.replace("新規掲載","追加が必要"):L.kind==="del"?"新メニューにない（削除が必要）":L.after;
+          row.values=[LABEL[L.kind],it.category||"",it.name,L.item,before,after,L.delta??null];
+          const [fc,bg]=KC[L.kind];
+          row.eachCell({includeEmpty:true},(c,col)=>{ if(col>7) return; c.border=box; c.font=font(); c.alignment={vertical:"middle",wrapText:true}; });
+          row.getCell(1).font=font({bold:true,size:9,color:{argb:fc}}); row.getCell(1).fill=fill(bg); row.getCell(1).alignment={vertical:"middle",horizontal:"center"};
+          row.getCell(2).font=font({size:9,color:{argb:C.muted}});
+          row.getCell(3).font=font({bold:true});
+          row.getCell(4).font=font({size:9}); row.getCell(4).alignment={vertical:"middle",horizontal:"center"};
+          row.getCell(5).font=font({color:{argb:C.muted}});
+          row.getCell(6).font=font({bold:true,color:{argb:L.kind==="add"?C.add:C.shu}});
+          row.getCell(7).numFmt='+#,##0;-#,##0;""'; row.getCell(7).font=font({bold:true,color:{argb:C.shu}});
+          const lns=t=>String(t).split("\n").reduce((a,seg)=>a+Math.max(1,Math.ceil([...seg].length/12)),0);
+          row.height=Math.max(20,Math.max(lns(before),lns(after))*14+6); r++;
+        });
+      });
+      r++;
+    });
+  }
   return wb;
 }
 async function saveXlsx(){
@@ -1446,7 +1564,8 @@ async function saveXlsx(){
   const sources={cur:live.cur.length?live.cur:(c&&c.sources?c.sources.cur:[]),new:live.new.length?live.new:(c&&c.sources?c.sources.new:[])};
   try{
     const wb=buildXlsx(ExcelJS,{storeName:st?st.name:(c?"":"サンプル"),title:c?c.title:"サンプル",createdAt:c?c.createdAt:null,sources,
-      rows:state.diff.rows,done:state.done,newItems:itemsOf("new"),exportedAt:Date.now()});
+      rows:state.diff.rows,done:state.done,newItems:itemsOf("new"),exportedAt:Date.now(),
+      sites:(state.sites||[]).map(x=>({...x,diff:siteDiff(x)}))});
     const buf=await wb.xlsx.writeBuffer();
     await downloads.save({filename:exportBase()+".xlsx",data:new Uint8Array(buf)}); toast("保存しました");
   }catch(e){ if(!(e&&e.code==="declined")) toast("保存できませんでした"); }
@@ -1455,7 +1574,7 @@ let tt; function toast(m){ let t=$(".toast"); if(!t){t=document.createElement("d
 
 /* ---------- run ---------- */
 let ctl=null;
-function hasSource(side){ const st=state[side]; return st.files.length||st.text.trim()||(st.webText||"").trim()||(st.url||"").trim()||st.items; }
+function hasSource(side){ const st=state[side]; return st.files.length||st.text.trim()||(st.webText||"").trim()||(st.url||"").trim()||st.items||(side==="cur"&&storeRefs().length>0); }
 function renderRunState(){
   const btn=$("#run"), pg=$("#progress");
   if(ctl) return;
@@ -1473,20 +1592,47 @@ $("#run").onclick=async()=>{
   const step=m=>{pg.innerHTML=`${esc(m)}<div class="bar"><i></i></div>`;};
   const allNotes=[]; let extracted=false;
   try{
-    for(const side of ["cur","new"]){
+    for(const side of ["new","cur"]){
       const st=state[side]; const sig=sourceSig(side);
+      if(side==="cur"&&!curOwn()&&!(st.webText||"").trim()&&!(st.url||"").trim()) continue; // サイトから補う
       if(st.items&&st.sig===sig) continue;
       if(!st.files.length&&!st.text.trim()&&!(st.webText||"").trim()&&!(st.url||"").trim()&&st.items) continue; // edited manually
       const {items,notes}=await extractSide(side,signal,step);
       st.items=items; st.sig=sig; allNotes.push(...notes); extracted=true;
       renderSide(side);
     }
+    // 登録済みのグルメサイトをすべて読み込んで照合
+    const refs=storeRefs();
+    const sameList=(state.sites||[]).map(x=>x.url).join("\n")===refs.map(r=>r.url).join("\n");
+    let sitesChecked=false;
+    if(refs.length&&(extracted||!sameList||!(state.sites||[]).length)){
+      const out=new Array(refs.length); let next=0, doneN=0;
+      step(`グルメサイトを読み込んでいます（0/${refs.length}）`);
+      const worker=async()=>{ while(next<refs.length){ const i=next++; const r=refs[i]; const url=normalizeMenuUrl(r.url);
+        try{ const res=await callExtract({url},signal); out[i]={label:r.label,url:r.url,status:"ok",items:cleanItems(res&&res.items),title:(res&&res.page_title)||"",checkedAt:Date.now()}; }
+        catch(e){ if(e&&e.code==="cancelled") throw e; if(e&&(e.code==="no_api_key"||e.code==="bad_api_key"||e.code==="forbidden"||e.code==="session_expired")) throw e;
+          out[i]={label:r.label,url:r.url,status:"error",message:(e&&e.message)||"ページを取得できませんでした。",items:[],checkedAt:Date.now()}; }
+        doneN++; step(`グルメサイトを読み込んでいます（${doneN}/${refs.length}）`); } };
+      await Promise.all([worker(),worker()]);
+      state.sites=out; sitesChecked=true;
+      const empty=out.find(x=>x.status==="ok"&&!(x.items||[]).length);
+      if(empty) allNotes.push(`${empty.label}：ページからメニューを見つけられませんでした。メニューページのURLか確認してください。`);
+    }
+    // 現行メニューの資料がない場合は、読み込めたサイトの掲載内容を変更前にする
+    if(!curOwn()&&!state.cur.items){
+      const base=(state.sites||[]).find(x=>x.status==="ok"&&(x.items||[]).length);
+      if(!base) throw {code:"no_source",message:"現行メニューの資料がなく、登録されたグルメサイトからも読み込めませんでした。現行メニューのファイルかテキストを登録してください。"};
+      state.cur.items=base.items.map(x=>({...x})); state.cur.sig=sourceSig("cur"); extracted=true;
+      allNotes.push(`現行メニューの資料がないため、${base.label}の掲載内容を変更前として比べました。`);
+      renderSide("cur");
+    }
     if(extracted){ state.done.clear(); state.filter="all"; }
     state.sample=false;
     recompute();
+    if(state.current&&sitesChecked&&!extracted) scheduleSave({sitesNeedUpdate:sitesNeedUpdate()},true);
     if(state.current&&(extracted||state.current.status==="未着手")){
       state.current.status="確認中"; state.current.sources={cur:srcNames("cur"),new:srcNames("new")};
-      scheduleSave({...summaryOf(),status:"確認中",sources:state.current.sources},true); renderActions();
+      scheduleSave({...summaryOf(),status:"確認中",sources:state.current.sources,sitesNeedUpdate:sitesNeedUpdate()},true); renderActions();
     }
     pg.innerHTML=(allNotes.length?`<span class="err">${allNotes.map(esc).join("<br>")}</span><br>`:"")+"抽出が終わりました。読み取り違いがあれば各パネルで修正できます。";
     $("#results").scrollIntoView({behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth",block:"start"});
