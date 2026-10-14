@@ -561,7 +561,7 @@ const SAMPLE={
 /* ---------- backend (Supabase) ---------- */
 const CFG=window.APP_CONFIG;
 const sb=window.supabase.createClient(CFG.supabaseUrl,CFG.supabaseKey,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true,flowType:"implicit"}});
-let sample=null, limits={images:{maxCount:4}}, db=null, me={email:""}, canWrite=true;
+let sample=null, limits={images:{maxCount:1}}, db=null, me={email:""}, canWrite=true;
 const downloads={ async save({filename,data}){
   const blob=data instanceof Blob?data:new Blob([data]);
   const url=URL.createObjectURL(blob); const a=document.createElement("a");

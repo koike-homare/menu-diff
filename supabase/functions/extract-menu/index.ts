@@ -11,26 +11,42 @@ const RULES = `あなたは飲食店のメニュー表を正確にデータ化�
 ルール:
 - 1商品につき1件。サイズ・量・人数で価格が違う場合は別の商品に分け、名前の末尾に（中）（大）（2人前）などを付ける
 - price は税込価格を整数（円）で。税込と税抜が併記されていれば税込。記載がない・読めない場合は null
-- price_text は資料の表記どおりの価格文字列
 - category は資料上の見出し（例：前菜、揚げ物、ドリンク）。見出しがなければ ""
 - description は商品に付いた説明文・内容量・注記（期間限定、数量限定、アレルギー表示など）。なければ ""
 - 店名、住所、営業時間、サービス料の案内など、商品でないものは含めない
 - 推測で補ったり言い換えたりしない。表記どおりに写す
 - 資料が「変更依頼」の文面なら、記載された商品だけを抜き出す
 - 資料がWebページの場合、ページ内のメニュー部分だけを対象にし、口コミ・広告・他店の情報・ナビゲーションは無視する
-返答はJSONのみ: {"items":[{"category":"前菜","name":"枝豆","price":380,"price_text":"380円","description":""}]}`;
+返答は次の形のJSONのみ。1商品を [カテゴリ, 商品名, 税込価格(整数またはnull), 説明] の配列にし、説明がなければ "" にする:
+{"items":[["前菜","枝豆",380,""],["ドリンク","生ビール（中）",580,"期間限定"]]}`;
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...cors, "Content-Type": "application/json" } });
+
+// [カテゴリ, 商品名, 価格, 説明] の配列、または {category,name,price,description} を商品データにそろえる
+function toItem(v: unknown): Record<string, unknown> | null {
+  if (Array.isArray(v)) { const [category, name, price, description] = v; return name ? { category: category ?? "", name, price: price ?? null, description: description ?? "" } : null; }
+  if (v && typeof v === "object" && (v as Record<string, unknown>).name) return v as Record<string, unknown>;
+  return null;
+}
+// 途中で切れた返答から、最後まで書けている商品だけを取り出す
+function salvageItems(text: string): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  const re = /\[\s*("(?:[^"\\]|\\.)*")\s*,\s*("(?:[^"\\]|\\.)*")\s*,\s*(-?\d+(?:\.\d+)?|null)\s*,\s*("(?:[^"\\]|\\.)*")\s*\]/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) { try { const it = toItem([JSON.parse(m[1]), JSON.parse(m[2]), JSON.parse(m[3]), JSON.parse(m[4])]); if (it) out.push(it); } catch { /* skip */ } }
+  return out;
+}
 
 function parseItems(text: string): { items: unknown[] } | null {
   const tryParse = (s: string) => { try { return JSON.parse(s); } catch { return null; } };
   let v = tryParse(text.trim());
   if (!v) { const m = text.match(/```(?:json)?\s*([\s\S]*?)```/); if (m) v = tryParse(m[1]); }
   if (!v) { const a = text.indexOf("{"), b = text.lastIndexOf("}"); if (a >= 0 && b > a) v = tryParse(text.slice(a, b + 1)); }
-  if (Array.isArray(v)) return { items: v };
-  if (v && Array.isArray(v.items)) return v;
-  return null;
+  const list = Array.isArray(v) ? v : v && Array.isArray(v.items) ? v.items : null;
+  if (list) return { items: list.map(toItem).filter(Boolean) as unknown[] };
+  const salvaged = salvageItems(text);
+  return salvaged.length ? { items: salvaged } : null;
 }
 
 /* ---- グルメサイト等のページ取得 ---- */
@@ -154,7 +170,7 @@ Deno.serve(async (req) => {
     res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-      body: JSON.stringify({ model, max_tokens: 16000, messages: [{ role: "user", content }] }),
+      body: JSON.stringify({ model, max_tokens: 32000, messages: [{ role: "user", content }] }),
     });
   } catch {
     return json({ code: "upstream_error", message: "Claudeに接続できませんでした。少し待ってからもう一度お試しください。" }, 502);
