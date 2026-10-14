@@ -17,7 +17,7 @@
 ## 初回の設定
 
 1. **GitHub Pages**：リポジトリの Settings → Pages で、Source を「Deploy from a branch」、Branch を `main` / `(root)` にして保存。
-2. **共通アカウント**：Supabase の Authentication → Users →「Add user」→「Create new user」で、Email に `menu-team@8sin.co.jp`、Password に部署共通のパスワードを入れ、「Auto Confirm User」にチェックして作成。画面ではこのパスワードだけでログインします（メールは送信しません）。パスワードを変えるときは同じ画面でこのユーザーのパスワードを更新します。
+2. **共通アカウント**：Supabase の Authentication → Users →「Add user」→「Create new user」で、Email に `menu-team@8sin.co.jp`、Password に部署共通のパスワードを入れ、「Auto Confirm User」にチェックして作成。画面ではこのパスワードだけでログインします（メールは送信しません）。作成後のパスワード変更は、ログイン後にサイドバー下の「パスワード変更」から行えます（現在のパスワードが必要。変更するとほかの端末はログアウトされます）。
 3. **Claude APIキー**：Anthropic の管理画面でキーを発行し、Supabase の Edge Functions → Secrets に `ANTHROPIC_API_KEY` という名前で登録（キーはリポジトリに入れない）。
 
 任意の設定（Edge Functions → Secrets）：
