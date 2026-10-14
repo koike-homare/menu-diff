@@ -306,6 +306,10 @@ input[type=url]{width:100%;border:1px solid var(--line);border-radius:5px;backgr
 .ov.warn b{color:var(--shu)}
 .ov.ok b{color:var(--add)}
 .chips-label{padding:12px 20px 0;font-size:.74rem;letter-spacing:.06em;color:var(--muted)}
+.cmp-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px 16px}
+.cmp-row label{display:flex;align-items:center;gap:5px;cursor:pointer;letter-spacing:0;color:var(--ink);font-size:.8rem}
+.cmp-row .chk{width:15px;height:15px}
+.cmp-note{letter-spacing:0;font-size:.76rem}
 .chip{display:flex;align-items:center;gap:8px;border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:5px 12px 5px 6px;cursor:pointer;font-size:.86rem}
 .chip .n{font-family:var(--font-num);font-variant-numeric:tabular-nums;min-width:2.1em;text-align:center;border-radius:999px;padding:1px 6px;font-size:.8rem}
 .chip[aria-pressed="true"]{border-color:var(--ink);box-shadow:inset 0 0 0 1px var(--ink)}
@@ -523,6 +527,7 @@ const state={
   cur:{tab:"file",files:[],text:"",url:"",webText:"",items:null,sig:""},
   new:{tab:"file",files:[],text:"",items:null,sig:""},
   sample:true, filter:"all", done:new Set(), diff:null,
+  cmp:null,      // {cat,desc}: 表示する違い（null は自動）
   current:null,  // {storeId, recId, title, createdAt, status, by, sources} while a record is open
   view:"stores"  // stores | store | record
 };
@@ -862,7 +867,7 @@ $("#rc-add").onsubmit=async e=>{
 function resetWorkspace(){
   state.cur={tab:"file",files:[],text:"",url:"",webText:"",items:null,sig:""};
   state.new={tab:"file",files:[],text:"",url:"",webText:"",items:null,sig:""};
-  state.done=new Set(); state.diff=null; state.filter="all"; state.sample=false; state.current=null; state.sites=[];
+  state.done=new Set(); state.diff=null; state.filter="all"; state.sample=false; state.current=null; state.sites=[]; state.cmp=null;
   $("#progress").textContent=""; saveText="";
 }
 async function openRecord(sid,rid){
@@ -1211,11 +1216,22 @@ function nearestOrder(o,pairs){ // place deleted items next to their old neighbo
 const KIND={add:["新規追加","t-add"],del:["削除","t-del"],price:["価格変更","t-price"],name:["名称変更","t-name"],cat:["カテゴリ移動","t-cat"],desc:["説明・表記","t-desc"]};
 function recompute(rerenderSides,side){
   const a=itemsOf("cur"), b=itemsOf("new");
-  state.diff=(a.length&&b.length)?computeDiff(a,b):null;
+  state.diff=(a.length&&b.length)?filterDiff(computeDiff(a,b),cmpOpts()):null;
   if(rerenderSides){ renderSide(side); }
   renderResults();
 }
-function siteDiff(site){ const b=itemsOf("new"); return site.status==="ok"&&b.length?computeDiff(site.items||[],b):null; }
+// グルメサイトはカテゴリの分け方や説明文の書き方が店舗資料と違うため、照合は価格・商品名・掲載有無で行う
+const SITE_CMP={cat:false,desc:false};
+function curFromSite(){ const c=state.current; return ((c&&c.sources&&c.sources.cur)||[]).some(x=>/（自動）$/.test(x))||(!curOwn()&&!!state.cur.items&&(state.sites||[]).some(x=>x.status==="ok")); }
+function cmpOpts(){ if(state.cmp) return state.cmp; const auto=!curFromSite(); return {cat:auto,desc:auto}; }
+function filterDiff(d,o){
+  if(o.cat&&o.desc) return d;
+  const rows=[], same=[...d.same];
+  d.rows.forEach(r=>{ const kinds=r.kinds.filter(k=>!(k==="cat"&&!o.cat)&&!(k==="desc"&&!o.desc)); (kinds.length?rows:same).push({...r,kinds}); });
+  same.sort((a,b)=>a.order-b.order);
+  return {rows,same};
+}
+function siteDiff(site){ const b=itemsOf("new"); return site.status==="ok"&&b.length?filterDiff(computeDiff(site.items||[],b),SITE_CMP):null; }
 function sitesNeedUpdate(){ return (state.sites||[]).filter(x=>{ const d=siteDiff(x); return d&&d.rows.length; }).length; }
 function siteCell(it,d,side){
   if(!it) return side==="site"?`<span class="was">掲載なし</span>`:`<span class="was">新メニューにない</span>`;
@@ -1245,7 +1261,7 @@ function renderSites(){
     const body=x.status!=="ok"?`<p class="site-err">${esc(x.message||"ページを取得できませんでした。")}</p>`
       :!d?`<p class="note">新メニューを読み取ると照合結果が出ます。</p>`
       :!d.rows.length?`<p class="note">掲載内容は新メニューと一致しています（${(x.items||[]).length}商品）。</p>`
-      :`<p class="note">このサイトに掲載中の ${(x.items||[]).length} 商品と新メニューを比べた結果です。左が「サイトの掲載」、右が「新メニュー」です。</p>
+      :`<p class="note">このサイトに掲載中の ${(x.items||[]).length} 商品と新メニューを、価格・商品名・掲載の有無で比べた結果です（カテゴリの分け方と説明文はサイトごとに違うため除いています）。左が「サイトの掲載」、右が「新メニュー」です。</p>
         <div class="tablewrap"><table><thead><tr><th>種別</th><th>カテゴリ</th><th>サイトの掲載</th><th>新メニュー</th></tr></thead><tbody>${d.rows.map(r=>`<tr><td><div class="kinds">${r.kinds.map(k=>`<span class="kind ${KIND[k][1]}">${KIND[k][0]}</span>`).join("")}</div></td><td class="cat">${esc((r.new||r.old).category)}</td><td>${siteCell(r.old,r,"site")}</td><td>${siteCell(r.new,r,"new")}</td></tr>`).join("")}</tbody></table></div>`;
     return `<details class="site" ${d&&d.rows.length&&i===0?"open":""}><summary>
       <span class="site-name"><span class="caret">▶</span>${esc(x.label)}</span>
@@ -1279,7 +1295,11 @@ function renderResults(){
       <div class="ov"><span class="ov-l">変更のない商品</span><b class="num">${Math.max(0,total-(d.rows.length-delN))}</b></div>
       <div class="ov ${left?"warn":"ok"}"><span class="ov-l">未確認</span><b class="num">${left}</b>${left?"":`<small>すべて確認済み</small>`}</div>
     </div>
-    <div class="chips-label">変更の内訳</div>
+    <div class="chips-label cmp-row"><span>変更の内訳</span>
+      <label><input type="checkbox" class="chk" id="cmp-cat" ${cmpOpts().cat?"checked":""}>カテゴリの違いも表示</label>
+      <label><input type="checkbox" class="chk" id="cmp-desc" ${cmpOpts().desc?"checked":""}>説明・表記の違いも表示</label>
+      ${curFromSite()?`<span class="cmp-note">変更前がグルメサイトのため、最初はカテゴリ・説明の違いを除いています</span>`:""}
+    </div>
     <div class="chips" role="group" aria-label="変更の内訳で絞り込み">
       <button class="chip" data-k="all" aria-pressed="${state.filter==="all"}"><span class="n">${counts.all}</span>すべて</button>
       ${Object.entries(KIND).map(([k,[l,c]])=>`<button class="chip ${c}" data-k="${k}" aria-pressed="${state.filter===k}" ${counts[k]?"":"disabled style='opacity:.45'"}><span class="n">${counts[k]}</span>${l}</button>`).join("")}
@@ -1291,6 +1311,8 @@ function renderResults(){
       <div class="tablewrap"><table><tbody>${d.same.map(r=>`<tr><td class="cat">${esc(r.new.category)}</td><td>${esc(r.new.name)}</td><td class="pr">${yen(r.new.price)}</td></tr>`).join("")}</tbody></table></div>
     </details>`;
   el.querySelectorAll(".chip").forEach(b=>b.onclick=()=>{state.filter=b.dataset.k;renderResults();});
+  const setCmp=()=>{ state.cmp={cat:$("#cmp-cat",el).checked,desc:$("#cmp-desc",el).checked}; if(!state.cmp[state.filter]&&["cat","desc"].includes(state.filter)) state.filter="all"; recompute(); itemsEdited(); };
+  $("#cmp-cat",el).onchange=setCmp; $("#cmp-desc",el).onchange=setCmp;
   el.querySelectorAll(".chk[data-id]").forEach(c=>c.onchange=()=>{c.checked?state.done.add(c.dataset.id):state.done.delete(c.dataset.id);scheduleSave({leftCount:leftCount()},true);renderResults();});
   $("#copy",el).onclick=copyTable;
   const cb=$("#csv",el); if(cb) cb.onclick=saveCsv;
