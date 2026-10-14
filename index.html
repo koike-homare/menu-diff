@@ -1043,8 +1043,26 @@ function decodeText(buf){
   if((t.match(new RegExp(String.fromCharCode(0xFFFD),"g"))||[]).length>3){ try{ t=new TextDecoder("shift_jis").decode(buf); }catch(e){} }
   return t;
 }
+// 「商品名」「価格」などの見出しがある表は、Claudeを通さずにそのまま商品データにする
+function tableToItems(rows){
+  const H={name:/^(商品名|品名|メニュー名?|料理名|商品|品目|名称)$/,price:/(価格|金額|売価|単価|料金|税込)/,cat:/(カテゴリ|分類|部門|ジャンル|区分|大分類|中分類)/,desc:/(説明|備考|内容|注記|コメント)/};
+  for(let h=0;h<Math.min(rows.length,10);h++){
+    const head=(rows[h]||[]).map(v=>String(v??"").normalize("NFKC").trim());
+    const col=k=>head.findIndex(v=>v&&H[k].test(v));
+    const ni=col("name"), pi=col("price");
+    if(ni<0||pi<0) continue;
+    const ci=col("cat"), di=col("desc");
+    const items=[];
+    for(const r of rows.slice(h+1)){
+      const name=String(r[ni]??"").trim(); if(!name) continue;
+      items.push({category:ci>=0?String(r[ci]??"").trim():"",name,price:parsePrice(r[pi]),description:di>=0?String(r[di]??"").trim():""});
+    }
+    if(items.length) return items;
+  }
+  return null;
+}
 async function readSources(side,signal,onStep){
-  const st=state[side]; const texts=[]; const images=[]; const notes=[];
+  const st=state[side]; const texts=[]; const images=[]; const notes=[]; const direct=[];
   for(const f of st.files){
     if(signal.aborted) throw {code:"cancelled"};
     const ext=(f.name.split(".").pop()||"").toLowerCase();
@@ -1053,9 +1071,17 @@ async function readSources(side,signal,onStep){
       if(["xlsx","xls","xlsm"].includes(ext)){
         if(!window.XLSX) throw new Error("Excel読み込み部品が読み込めませんでした");
         const wb=XLSX.read(await f.arrayBuffer(),{type:"array"});
-        wb.SheetNames.forEach(n=>{ const csv=XLSX.utils.sheet_to_csv(wb.Sheets[n],{blankrows:false}); if(csv.trim()) texts.push({label:`${f.name} / シート「${n}」`,text:csv}); });
+        wb.SheetNames.forEach(n=>{
+          const rows=XLSX.utils.sheet_to_json(wb.Sheets[n],{header:1,blankrows:false,defval:""});
+          const its=tableToItems(rows);
+          if(its){ direct.push(...its); notes.push(`${f.name}（${n}）：表の見出しから ${its.length} 商品をそのまま読み込みました。`); return; }
+          const csv=XLSX.utils.sheet_to_csv(wb.Sheets[n],{blankrows:false}); if(csv.trim()) texts.push({label:`${f.name} / シート「${n}」`,text:csv});
+        });
       }else if(["csv","tsv","txt"].includes(ext)){
-        texts.push({label:f.name,text:decodeText(await f.arrayBuffer())});
+        const txt=decodeText(await f.arrayBuffer());
+        const its=window.XLSX&&ext!=="txt"?tableToItems(XLSX.utils.sheet_to_json(XLSX.read(txt,{type:"string",FS:ext==="tsv"?"\t":","}).Sheets.Sheet1,{header:1,blankrows:false,defval:""})):null;
+        if(its){ direct.push(...its); notes.push(`${f.name}：表の見出しから ${its.length} 商品をそのまま読み込みました。`); }
+        else texts.push({label:f.name,text:txt});
       }else if(ext==="docx"){
         if(!window.mammoth) throw new Error("Word読み込み部品が読み込めませんでした");
         const r=await mammoth.extractRawText({arrayBuffer:await f.arrayBuffer()});
@@ -1073,7 +1099,7 @@ async function readSources(side,signal,onStep){
   }
   if(st.text.trim()) texts.push({label:"貼り付けテキスト",text:st.text});
   if((st.webText||"").trim()) texts.push({label:"グルメサイト"+(st.url?`（${st.url}）`:""),text:st.webText});
-  return {texts,images,notes};
+  return {texts,images,notes,direct};
 }
 async function readPdf(f,texts,images,onStep,signal){
   const lib=window.pdfjsLib; if(!lib) throw new Error("PDF読み込み部品が読み込めませんでした");
@@ -1126,10 +1152,10 @@ function cleanItems(arr){
 function parsePrice(s){ if(s==null) return null; const m=String(s).normalize("NFKC").replace(/,/g,"").match(/\d+/); return m?parseInt(m[0],10):null; }
 
 async function extractSide(side,signal,onStep){
-  const {texts,images,notes}=await readSources(side,signal,onStep);
+  const {texts,images,notes,direct}=await readSources(side,signal,onStep);
   const pageUrl=urlOnly(side)?normalizeMenuUrl(state[side].url):"";
-  if(!texts.length&&!images.length&&!pageUrl) throw {code:"no_source",message:`${SIDES[side].label}：読み取れる資料がありません。`+(notes.length?"\n"+notes.join("\n"):"")};
-  let items=[];
+  if(!texts.length&&!images.length&&!pageUrl&&!direct.length) throw {code:"no_source",message:`${SIDES[side].label}：読み取れる資料がありません。`+(notes.length?"\n"+notes.join("\n"):"")};
+  let items=[...direct];
   if(pageUrl){
     onStep(`${SIDES[side].label}：Webページを取得して読み取っています`);
     const r=await callExtract({url:pageUrl},signal);
@@ -1223,7 +1249,13 @@ function recompute(rerenderSides,side){
 // グルメサイトはカテゴリの分け方や説明文の書き方が店舗資料と違うため、照合は価格・商品名・掲載有無で行う
 const SITE_CMP={cat:false,desc:false};
 function curFromSite(){ const c=state.current; return ((c&&c.sources&&c.sources.cur)||[]).some(x=>/（自動）$/.test(x))||(!curOwn()&&!!state.cur.items&&(state.sites||[]).some(x=>x.status==="ok")); }
-function cmpOpts(){ if(state.cmp) return state.cmp; const auto=!curFromSite(); return {cat:auto,desc:auto}; }
+function cmpOpts(){
+  if(state.cmp) return state.cmp;
+  const a=itemsOf("cur"), b=itemsOf("new"), has=(list,f)=>list.some(x=>String(x[f]||"").trim());
+  const auto=!curFromSite();
+  // 片方の資料にカテゴリ（説明）がまったくない場合は、その項目を比べない
+  return {cat:auto&&has(a,"category")&&has(b,"category"),desc:auto&&has(a,"description")&&has(b,"description")};
+}
 function filterDiff(d,o){
   if(o.cat&&o.desc) return d;
   const rows=[], same=[...d.same];
@@ -1298,7 +1330,8 @@ function renderResults(){
     <div class="chips-label cmp-row"><span>変更の内訳</span>
       <label><input type="checkbox" class="chk" id="cmp-cat" ${cmpOpts().cat?"checked":""}>カテゴリの違いも表示</label>
       <label><input type="checkbox" class="chk" id="cmp-desc" ${cmpOpts().desc?"checked":""}>説明・表記の違いも表示</label>
-      ${curFromSite()?`<span class="cmp-note">変更前がグルメサイトのため、最初はカテゴリ・説明の違いを除いています</span>`:""}
+      ${!state.cmp&&curFromSite()?`<span class="cmp-note">変更前がグルメサイトのため、最初はカテゴリ・説明の違いを除いています</span>`
+        :!state.cmp&&(!cmpOpts().cat||!cmpOpts().desc)?`<span class="cmp-note">片方の資料にない項目（${[!cmpOpts().cat?"カテゴリ":"",!cmpOpts().desc?"説明":""].filter(Boolean).join("・")}）は比べていません</span>`:""}
     </div>
     <div class="chips" role="group" aria-label="変更の内訳で絞り込み">
       <button class="chip" data-k="all" aria-pressed="${state.filter==="all"}"><span class="n">${counts.all}</span>すべて</button>
