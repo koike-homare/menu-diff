@@ -1205,6 +1205,18 @@ function computeDiff(oldItems,newItems){
   const pairs=[]; const usedO=new Set(), usedN=new Set();
   // 1) exact name
   N.forEach(n=>{ const o=O.find(o=>!usedO.has(o._i)&&o._n===n._n); if(o){usedO.add(o._i);usedN.add(n._i);pairs.push([o,n,1]);} });
+  // 1b) まとめ書き「赤だし（魚・玉子・あおさ）」と個別書き「赤だし（魚）」「赤だし（玉子）」…を同じ商品として対応づける
+  const groupPass=(Xs,Ys,usedX,usedY,xIsOld)=>{
+    Xs.forEach(x=>{
+      if(usedX.has(x._i)) return;
+      const sx=splitVariants(x.name); if(!sx||sx.opts.length<2) return;
+      const parts=Ys.filter(y=>{ if(usedY.has(y._i)) return false; const sy=splitVariants(y.name); return sy&&sy.opts.length===1&&sy.base===sx.base&&sx.opts.includes(sy.opts[0]); });
+      if(parts.length<2) return;
+      usedX.add(x._i); parts.forEach(y=>{ usedY.add(y._i); pairs.push(xIsOld?[x,y,1,"group"]:[y,x,1,"group"]); });
+    });
+  };
+  groupPass(N,O,usedN,usedO,false);
+  groupPass(O,N,usedO,usedN,true);
   // 2) fuzzy
   const cand=[];
   O.forEach(o=>{ if(usedO.has(o._i)) return; N.forEach(n=>{ if(usedN.has(n._i)) return;
@@ -1216,22 +1228,31 @@ function computeDiff(oldItems,newItems){
   cand.sort((a,b)=>b[0]-a[0]);
   cand.forEach(([s,o,n])=>{ if(usedO.has(o._i)||usedN.has(n._i)) return; usedO.add(o._i);usedN.add(n._i);pairs.push([o,n,s]); });
   const rows=[], same=[];
-  pairs.forEach(([o,n])=>{
-    const kinds=[];
-    if(o._n!==n._n) kinds.push("name");
+  pairs.forEach(([o,n,_s,flag])=>{
+    const kinds=[], group=flag==="group";
+    if(o._n!==n._n&&!group) kinds.push("name");
     if((o.price??null)!==(n.price??null)) kinds.push("price");
     if(norm(o.category)!==norm(n.category)&&(o.category||n.category)) kinds.push("cat");
     const od=norm(o.description), nd=norm(n.description);
     const nameSymbolOnly=o._n===n._n&&o.name.normalize("NFKC").replace(/\s/g,"")!==n.name.normalize("NFKC").replace(/\s/g,"");
-    if(od!==nd||nameSymbolOnly) kinds.push("desc");
-    const r={old:o,new:n,kinds,id:"p"+o._i+"-"+n._i,order:n._i};
+    if(od!==nd||(nameSymbolOnly&&!group)) kinds.push("desc");
+    const r={old:o,new:n,kinds,id:"p"+o._i+"-"+n._i,order:n._i,group};
     (kinds.length?rows:same).push(r);
   });
   O.forEach(o=>{ if(!usedO.has(o._i)) rows.push({old:o,new:null,kinds:["del"],id:"d"+o._i,order:nearestOrder(o,pairs)}); });
   N.forEach(n=>{ if(!usedN.has(n._i)) rows.push({old:null,new:n,kinds:["add"],id:"a"+n._i,order:n._i}); });
   rows.sort((a,b)=>a.order-b.order);
   same.sort((a,b)=>a.order-b.order);
-  return {rows,same};
+  // まとめ書きの商品が複数の個別商品と対応したとき、変更のない商品の一覧では1件にまとめる
+  const sameU=same.filter((r,i,a)=>a.findIndex(x=>x.new._i===r.new._i&&x.old._i===r.old._i||(r.group&&x.group&&x.new._i===r.new._i))===i);
+  return {rows,same:sameU};
+}
+// 「赤だし（魚・玉子・あおさ）」→ {base:"赤だし", opts:["魚","玉子","あおさ"]}
+function splitVariants(name){
+  const m=String(name||"").normalize("NFKC").match(/^(.*?)\s*[(（]([^()（）]+)[)）]\s*$/);
+  if(!m||!m[1].trim()) return null;
+  const opts=m[2].split(/[・\/／、,，]/).map(x=>norm(x)).filter(Boolean);
+  return {base:norm(m[1]),opts};
 }
 function nearestOrder(o,pairs){ // place deleted items next to their old neighbours
   let best=null; pairs.forEach(([po,pn])=>{ if(po._i<o._i&&(!best||po._i>best[0]._i)) best=[po,pn]; });
@@ -1365,7 +1386,7 @@ function rowHtml(r){
   const kinds=k.map(x=>`<span class="kind ${KIND[x][1]}">${KIND[x][0]}</span>`).join("");
   const ch={};
   if(o&&n){
-    ch.cat=k.includes("cat"); ch.name=k.includes("name")||o.name!==n.name; ch.price=k.includes("price");
+    ch.cat=k.includes("cat"); ch.name=k.includes("name")||(o.name!==n.name&&!r.group); ch.price=k.includes("price");
     ch.desc=norm(o.description)!==norm(n.description);
   }
   let delta="";
