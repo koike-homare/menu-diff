@@ -528,6 +528,7 @@ const state={
   new:{tab:"file",files:[],text:"",items:null,sig:""},
   sample:true, filter:"all", done:new Set(), diff:null,
   cmp:null,      // {cat,desc}: 表示する違い（null は自動）
+  hints:[],      // [[変更前の名前, 変更後の名前, "notation"|"renamed"]] Claudeが判定した同じ商品の組
   current:null,  // {storeId, recId, title, createdAt, status, by, sources} while a record is open
   view:"stores"  // stores | store | record
 };
@@ -880,14 +881,14 @@ $("#rc-add").onsubmit=async e=>{
 function resetWorkspace(){
   state.cur={tab:"file",files:[],text:"",url:"",webText:"",items:null,sig:""};
   state.new={tab:"file",files:[],text:"",url:"",webText:"",items:null,sig:""};
-  state.done=new Set(); state.diff=null; state.filter="all"; state.sample=false; state.current=null; state.sites=[]; state.cmp=null;
+  state.done=new Set(); state.diff=null; state.filter="all"; state.sample=false; state.current=null; state.sites=[]; state.cmp=null; state.hints=[];
   $("#progress").textContent=""; saveText="";
 }
 async function openRecord(sid,rid){
   flushNow();
   const [r1,r2]=await Promise.all([
     sb.from("records").select("id,store_id,title,status,sources,created_at").eq("id",rid).maybeSingle(),
-    sb.from("record_items").select("cur_items,new_items,done,site_checks").eq("record_id",rid).maybeSingle()]);
+    sb.from("record_items").select("cur_items,new_items,done,site_checks,match_hints").eq("record_id",rid).maybeSingle()]);
   if(r1.error){ toast("レコードを開けませんでした"); return; }
   if(!r1.data){ toast("このレコードは削除されています"); return; }
   const r=r1.data, it=r2.data||{};
@@ -897,6 +898,7 @@ async function openRecord(sid,rid){
   state.new.items=ni.length?ni.map(x=>({...x})):null;
   state.done=new Set(it.done||[]);
   state.sites=Array.isArray(it.site_checks)?it.site_checks:[];
+  state.hints=Array.isArray(it.match_hints)?it.match_hints:[];
   state.current={storeId:sid,recId:rid,title:r.title,createdAt:ts(r.created_at),status:r.status||"未着手",sources:r.sources||{cur:[],new:[]},hasItemsRow:!!r2.data};
   hist.storeId=sid;
   state.view="record"; hist.renaming=false; hist.confirmDel=false;
@@ -922,7 +924,7 @@ function flushNow(){
   const c=state.current; if(!c||!db||(!pendItems&&!Object.keys(pendSum).length)) return;
   const now=new Date().toISOString();
   const row={updated_at:now}; Object.entries(pendSum).forEach(([k,v])=>{ if(SUMCOL[k]) row[SUMCOL[k]]=v; });
-  const items=pendItems?{record_id:c.recId,cur_items:plain(itemsOf("cur")),new_items:plain(itemsOf("new")),done:[...state.done],site_checks:state.sites||[],updated_at:now}:null;
+  const items=pendItems?{record_id:c.recId,cur_items:plain(itemsOf("cur")),new_items:plain(itemsOf("new")),done:[...state.done],site_checks:state.sites||[],match_hints:state.hints||[],updated_at:now}:null;
   pendSum={}; pendItems=false;
   saving=saving.then(async()=>{
     if(items){ const {error}=await sb.from("record_items").upsert(items,{onConflict:"record_id"}); if(error) throw error; }
@@ -1230,6 +1232,8 @@ function computeDiff(oldItems,newItems){
   };
   groupPass(N,O,usedN,usedO,false);
   groupPass(O,N,usedO,usedN,true);
+  // 1c) Claudeが「同じ商品」と判定した組（カニ／蟹、茶碗／茶わん など）
+  O.forEach(o=>{ if(usedO.has(o._i)) return; const n=N.find(n=>!usedN.has(n._i)&&hintType(o.name,n.name)); if(n){ usedO.add(o._i); usedN.add(n._i); pairs.push([o,n,1,"hint"]); } });
   // 2) fuzzy
   const cand=[];
   O.forEach(o=>{ if(usedO.has(o._i)) return; N.forEach(n=>{ if(usedN.has(n._i)) return;
@@ -1243,7 +1247,7 @@ function computeDiff(oldItems,newItems){
   const rows=[], same=[];
   pairs.forEach(([o,n,_s,flag])=>{
     const kinds=[], group=flag==="group";
-    if(o._n!==n._n&&!group) kinds.push("name");
+    if(o._n!==n._n&&!group) kinds.push(hintType(o.name,n.name)==="notation"?"notation":"name");
     if((o.price??null)!==(n.price??null)) kinds.push("price");
     if(norm(o.category)!==norm(n.category)&&(o.category||n.category)) kinds.push("cat");
     const od=norm(o.description), nd=norm(n.description);
@@ -1260,6 +1264,10 @@ function computeDiff(oldItems,newItems){
   const sameU=same.filter((r,i,a)=>a.findIndex(x=>x.new._i===r.new._i&&x.old._i===r.old._i||(r.group&&x.group&&x.new._i===r.new._i))===i);
   return {rows,same:sameU};
 }
+function hintType(a,b){
+  const hs=(typeof state!=="undefined"&&state.hints)||[]; const ka=norm(a), kb=norm(b);
+  const h=hs.find(x=>norm(x[0])===ka&&norm(x[1])===kb); return h?h[2]:null;
+}
 // 「赤だし（魚・玉子・あおさ）」→ {base:"赤だし", opts:["魚","玉子","あおさ"]}
 function splitVariants(name){
   const m=String(name||"").normalize("NFKC").match(/^(.*?)\s*[(（]([^()（）]+)[)）]\s*$/);
@@ -1273,7 +1281,7 @@ function nearestOrder(o,pairs){ // place deleted items next to their old neighbo
 }
 
 /* ---------- results ---------- */
-const KIND={add:["新規追加","t-add"],del:["削除","t-del"],price:["価格変更","t-price"],name:["名称変更","t-name"],cat:["カテゴリ移動","t-cat"],desc:["説明・表記","t-desc"]};
+const KIND={add:["新規追加","t-add"],del:["削除","t-del"],price:["価格変更","t-price"],name:["名称変更","t-name"],notation:["表記ゆれ","t-desc"],cat:["カテゴリ移動","t-cat"],desc:["説明・表記","t-desc"]};
 function recompute(rerenderSides,side){
   const a=itemsOf("cur"), b=itemsOf("new");
   state.diff=(a.length&&b.length)?filterDiff(computeDiff(a,b),cmpOpts()):null;
@@ -1293,9 +1301,26 @@ function cmpOpts(){
 function filterDiff(d,o){
   if(o.cat&&o.desc) return d;
   const rows=[], same=[...d.same];
-  d.rows.forEach(r=>{ const kinds=r.kinds.filter(k=>!(k==="cat"&&!o.cat)&&!(k==="desc"&&!o.desc)); (kinds.length?rows:same).push({...r,kinds}); });
+  d.rows.forEach(r=>{ const kinds=r.kinds.filter(k=>!(k==="cat"&&!o.cat)&&!((k==="desc"||k==="notation")&&!o.desc)); (kinds.length?rows:same).push({...r,kinds}); });
   same.sort((a,b)=>a.order-b.order);
   return {rows,same};
+}
+// 削除・追加・名称変更として残った商品名をClaudeに渡し、同じ商品の書き方違いを判定してもらう
+async function resolveNames(signal){
+  const olds=new Set(), news=new Set();
+  const collect=d=>{ if(!d) return; d.rows.forEach(r=>{
+    if(r.kinds.includes("del")&&r.old) olds.add(r.old.name);
+    if(r.kinds.includes("add")&&r.new) news.add(r.new.name);
+    if(r.kinds.includes("name")&&r.old&&r.new&&!hintType(r.old.name,r.new.name)){ olds.add(r.old.name); news.add(r.new.name); }
+  }); };
+  collect(state.diff); (state.sites||[]).forEach(x=>collect(x.status==="ok"&&itemsOf("new").length?computeDiff(x.items||[],itemsOf("new")):null));
+  if(!olds.size||!news.size) return false;
+  try{
+    const r=await callExtract({mode:"match",old:[...olds],new:[...news]},signal);
+    const add=(r&&r.pairs||[]).filter(p=>!hintType(p[0],p[1]));
+    if(!add.length) return false;
+    state.hints=[...(state.hints||[]),...add]; return true;
+  }catch(e){ if(e&&e.code==="cancelled") throw e; return false; }
 }
 function siteDiff(site){ const b=itemsOf("new"); return site.status==="ok"&&b.length?filterDiff(computeDiff(site.items||[],b),SITE_CMP):null; }
 function sitesNeedUpdate(){ return (state.sites||[]).filter(x=>{ const d=siteDiff(x); return d&&d.rows.length; }).length; }
@@ -1380,7 +1405,7 @@ function renderResults(){
       <div class="tablewrap"><table><tbody>${d.same.map(r=>`<tr><td class="cat">${esc(r.new.category)}</td><td>${esc(r.new.name)}</td><td class="pr">${yen(r.new.price)}</td></tr>`).join("")}</tbody></table></div>
     </details>`;
   el.querySelectorAll(".chip").forEach(b=>b.onclick=()=>{state.filter=b.dataset.k;renderResults();});
-  const setCmp=()=>{ state.cmp={cat:$("#cmp-cat",el).checked,desc:$("#cmp-desc",el).checked}; if(!state.cmp[state.filter]&&["cat","desc"].includes(state.filter)) state.filter="all"; recompute(); itemsEdited(); };
+  const setCmp=()=>{ state.cmp={cat:$("#cmp-cat",el).checked,desc:$("#cmp-desc",el).checked}; if(["cat","desc","notation"].includes(state.filter)&&!state.cmp[state.filter==="notation"?"desc":state.filter]) state.filter="all"; recompute(); itemsEdited(); };
   $("#cmp-cat",el).onchange=setCmp; $("#cmp-desc",el).onchange=setCmp;
   el.querySelectorAll(".chk[data-id]").forEach(c=>c.onchange=()=>{c.checked?state.done.add(c.dataset.id):state.done.delete(c.dataset.id);scheduleSave({leftCount:leftCount()},true);renderResults();});
   $("#copy",el).onclick=copyTable;
@@ -1446,8 +1471,8 @@ function buildXlsx(ExcelJS,ctx){
   const C={ink:"FF1D2227",muted:"FF5B636B",line:"FFCBD0CB",band:"FFF1F3F0",white:"FFFFFFFF",
     shu:"FFC23E28",shuSoft:"FFF8E4DF",add:"FF2C7A4C",addSoft:"FFE1F1E7",del:"FF6A7178",delSoft:"FFECEEEC",
     name:"FF2B57A3",nameSoft:"FFE2EAF7",cat:"FF7748A0",catSoft:"FFEFE6F6",desc:"FF946410",descSoft:"FFF6EDD9"};
-  const KC={add:[C.add,C.addSoft],del:[C.del,C.delSoft],price:[C.shu,C.shuSoft],name:[C.name,C.nameSoft],cat:[C.cat,C.catSoft],desc:[C.desc,C.descSoft]};
-  const LABEL={add:"新規追加",del:"削除",price:"価格変更",name:"名称変更",cat:"カテゴリ移動",desc:"説明・表記"};
+  const KC={add:[C.add,C.addSoft],del:[C.del,C.delSoft],price:[C.shu,C.shuSoft],name:[C.name,C.nameSoft],notation:[C.desc,C.descSoft],cat:[C.cat,C.catSoft],desc:[C.desc,C.descSoft]};
+  const LABEL={add:"新規追加",del:"削除",price:"価格変更",name:"名称変更",notation:"表記ゆれ",cat:"カテゴリ移動",desc:"説明・表記"};
   const FONT="游ゴシック";
   const pad=x=>String(x).padStart(2,"0");
   const fdt=t=>{ if(!t) return "―"; const d=new Date(t); return `${d.getFullYear()}/${pad(d.getMonth()+1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
@@ -1476,6 +1501,7 @@ function buildXlsx(ExcelJS,ctx){
     if(!n) return [{kind:"del",item:"商品",before:`掲載あり　${yenS(o.price)}`+(o.description?`\n${o.description}`:""),after:"削除（掲載終了）"}];
     const L=[];
     if(d.kinds.includes("name")) L.push({kind:"name",item:"商品名",before:o.name,after:n.name});
+    if(d.kinds.includes("notation")) L.push({kind:"notation",item:"商品名の表記",before:o.name,after:n.name});
     if(d.kinds.includes("price")) L.push({kind:"price",item:"価格",before:yenS(o.price),after:yenS(n.price),delta:(o.price!=null&&n.price!=null)?n.price-o.price:null});
     if(d.kinds.includes("cat")) L.push({kind:"cat",item:"カテゴリ",before:o.category||"（なし）",after:n.category||"（なし）"});
     if(d.kinds.includes("desc")){
@@ -1515,7 +1541,7 @@ function buildXlsx(ExcelJS,ctx){
   const hr=r; s1.getRow(hr).values=[null,"種別","商品数","確認済み","内容"]; s1.getRow(hr).height=22;
   for(let c=2;c<=5;c++){ const x=s1.getCell(hr,c); x.font=font({bold:true,color:{argb:C.white}}); x.fill=fill(C.ink); x.border=box; x.alignment={vertical:"middle",horizontal:"center"}; }
   r++;
-  const NOTE={add:"新しく掲載される商品",del:"掲載が終了する商品",price:"価格が変わる商品",name:"商品名が変わる商品",cat:"掲載カテゴリが変わる商品",desc:"説明文・注記・表記が変わる商品"};
+  const NOTE={notation:"商品名の書き方だけが違う商品（カニ／蟹 など）",add:"新しく掲載される商品",del:"掲載が終了する商品",price:"価格が変わる商品",name:"商品名が変わる商品",cat:"掲載カテゴリが変わる商品",desc:"説明文・注記・表記が変わる商品"};
   Object.keys(LABEL).forEach(k=>{
     const rs=rows.filter(x=>x.kinds.includes(k)); const dn=rs.filter(x=>done.has(x.id)).length;
     const row=s1.getRow(r); row.values=[null,LABEL[k],rs.length,rs.length?dn:"",NOTE[k]]; row.height=20;
@@ -1726,7 +1752,9 @@ $("#run").onclick=async()=>{
     if(extracted){ state.done.clear(); state.filter="all"; }
     state.sample=false;
     recompute();
-    if(state.current&&sitesChecked&&!extracted) scheduleSave({sitesNeedUpdate:sitesNeedUpdate()},true);
+    let resolvedNow=false;
+    if(extracted||sitesChecked||!(state.hints||[]).length){ step("同じ商品の書き方違いを確認しています"); if(await resolveNames(signal)){ recompute(); resolvedNow=true; } }
+    if(state.current&&(sitesChecked||resolvedNow)&&!extracted) scheduleSave({...summaryOf(),sitesNeedUpdate:sitesNeedUpdate()},true);
     if(state.current&&(extracted||state.current.status==="未着手")){
       state.current.status="確認中"; state.current.sources={cur:srcNames("cur"),new:srcNames("new")};
       scheduleSave({...summaryOf(),status:"確認中",sources:state.current.sources,sitesNeedUpdate:sitesNeedUpdate()},true); renderActions();

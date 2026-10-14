@@ -20,6 +20,13 @@ const RULES = `あなたは飲食店のメニュー表を正確にデータ化�
 返答は次の形のJSONのみ。1商品を [カテゴリ, 商品名, 税込価格(整数またはnull), 説明] の配列にし、説明がなければ "" にする:
 {"items":[["前菜","枝豆",380,""],["ドリンク","生ビール（中）",580,"期間限定"]]}`;
 
+const MATCH_RULES = `飲食店のメニューで、変更前の商品名リスト(A)と変更後の商品名リスト(B)を比べます。AとBで「同じ商品」の組を見つけてください。
+- notation: 書き方だけが違う同じ商品（漢字・ひらがな・カタカナの違い、送り仮名、語順、記号や空白の違い）。例：茶碗蒸し/茶わん蒸し、カニ茶碗蒸し/蟹茶わん蒸し、だし巻き/出し巻き、まぐろ漬け/漬けまぐろ
+- renamed: 同じ商品だが名前の言葉が変わったもの。例：牛ハラミ焼き/黒毛和牛ハラミ焼き
+- 違う商品（味・具材・サイズ・個数が違うもの）は組にしない。迷う場合は組にしない
+- 1つの商品は1組にしか使わない
+返答はJSONのみ: {"pairs":[[Aの番号, Bの番号, "notation"],[Aの番号, Bの番号, "renamed"]]}`;
+
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...cors, "Content-Type": "application/json" } });
 
@@ -142,8 +149,35 @@ Deno.serve(async (req) => {
   const key = Deno.env.get("ANTHROPIC_API_KEY");
   if (!key) return json({ code: "no_api_key", message: "読み取り用のClaude APIキーがまだ設定されていません。管理者に設定を依頼してください。" }, 503);
 
-  let body: { text?: string; url?: string; images?: { media_type: string; data: string }[]; labels?: string };
+  let body: { text?: string; url?: string; images?: { media_type: string; data: string }[]; labels?: string; mode?: string; old?: string[]; new?: string[] };
   try { body = await req.json(); } catch { return json({ code: "bad_request", message: "送信内容を読み取れませんでした。" }, 400); }
+
+  // 同じ商品の書き方違いを判定する（商品名だけを送る軽い処理）
+  if (body.mode === "match") {
+    const A = (Array.isArray(body.old) ? body.old : []).map(String).slice(0, 400);
+    const B = (Array.isArray(body.new) ? body.new : []).map(String).slice(0, 400);
+    if (!A.length || !B.length) return json({ pairs: [] });
+    const list = (xs: string[]) => xs.map((x, i) => `${i}: ${x}`).join("\n");
+    const model = Deno.env.get("CLAUDE_MODEL") || "claude-sonnet-5-5";
+    let r: Response;
+    try {
+      r = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+        body: JSON.stringify({ model, max_tokens: 8000, messages: [{ role: "user", content: `${MATCH_RULES}\n\n(A) 変更前\n${list(A)}\n\n(B) 変更後\n${list(B)}` }] }),
+      });
+    } catch { return json({ code: "upstream_error", message: "Claudeに接続できませんでした。" }, 502); }
+    const o = await r.json().catch(() => null);
+    if (!r.ok) return json({ code: r.status === 429 || r.status === 529 ? "rate_limited" : "upstream_error", message: "商品名の照合に失敗しました。" }, 502);
+    const t = (o.content || []).filter((b: { type: string }) => b.type === "text").map((b: { text: string }) => b.text).join("");
+    let v: { pairs?: unknown[] } | null = null;
+    try { v = JSON.parse(t.trim()); } catch { const a = t.indexOf("{"), b = t.lastIndexOf("}"); try { v = JSON.parse(t.slice(a, b + 1)); } catch { v = null; } }
+    const pairs = (v && Array.isArray(v.pairs) ? v.pairs : [])
+      .filter((p): p is [number, number, string] => Array.isArray(p) && Number.isInteger(p[0]) && Number.isInteger(p[1]) && A[p[0]] !== undefined && B[p[1]] !== undefined)
+      .map(([i, j, k]) => [A[i], B[j], k === "renamed" ? "renamed" : "notation"]);
+    try { await admin.from("extract_logs").insert({ user_email: email, input_tokens: o.usage?.input_tokens ?? null, output_tokens: o.usage?.output_tokens ?? null, images: 0 }); } catch (_) { /* ignore */ }
+    return json({ pairs });
+  }
   let text = String(body.text || "").slice(0, 200000);
   let pageTitle = "";
   if (body.url) {
