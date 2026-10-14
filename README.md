@@ -8,7 +8,7 @@
 | 部分 | 置き場所 | 内容 |
 |---|---|---|
 | 画面 | `index.html`（GitHub Pagesで公開） | 1ファイルの静的ページ |
-| データ・ログイン | Supabase プロジェクト `menu-diff` | 店舗、レコード、読み取り結果。会社ドメインのメールでログインした人だけが読み書きできる |
+| データ・ログイン | Supabase プロジェクト `menu-diff` | 店舗、レコード、読み取り結果。部署共通アカウント（パスワードのみで入力）でログインした人だけが読み書きできる |
 | 読み取り | `supabase/functions/extract-menu` | ログイン確認後、Claude API に資料を送り商品データ（JSON）を返す |
 | DB定義 | `supabase/migrations/` | テーブル、アクセス制限（RLS） |
 
@@ -17,17 +17,18 @@
 ## 初回の設定
 
 1. **GitHub Pages**：リポジトリの Settings → Pages で、Source を「Deploy from a branch」、Branch を `main` / `(root)` にして保存。
-2. **ログインの戻り先**：Supabase の Authentication → URL Configuration で、Site URL に GitHub Pages の URL を登録。
+2. **共通アカウント**：Supabase の Authentication → Users →「Add user」→「Create new user」で、Email に `menu-team@8sin.co.jp`、Password に部署共通のパスワードを入れ、「Auto Confirm User」にチェックして作成。画面ではこのパスワードだけでログインします（メールは送信しません）。パスワードを変えるときは同じ画面でこのユーザーのパスワードを更新します。
 3. **Claude APIキー**：Anthropic の管理画面でキーを発行し、Supabase の Edge Functions → Secrets に `ANTHROPIC_API_KEY` という名前で登録（キーはリポジトリに入れない）。
 
 任意の設定（Edge Functions → Secrets）：
 
 - `CLAUDE_MODEL`：読み取りに使うモデル（既定 `claude-sonnet-5-5`）
-- `ALLOWED_EMAIL_DOMAIN`：ログインを許可するメールドメイン（既定 `8sin.co.jp`）。変える場合は `index.html` の `emailDomain` と、DB関数 `is_company_user()` も合わせて変更する
+- `ALLOWED_EMAIL_DOMAIN`：読み取りを許可するアカウントのメールドメイン（既定 `8sin.co.jp`）。共通アカウントのアドレスを変える場合は `index.html` の `sharedEmail`・`emailDomain` と、DB関数 `is_company_user()` も合わせて変更する
 
-## 社内に広げる前に
+## 運用メモ
 
-- Supabase 標準のメール送信は送信数が少なく、Supabase の組織メンバー宛てにしか届きません。Authentication → SMTP Settings で会社のメールサーバーを設定してください。
+- 全員が同じアカウントでログインするため、レコードの作成者や読み取りの利用者は個人ごとには記録されません。
+- パスワードを知っている人は誰でも使えます。異動・退職などのときはパスワードを変更してください。
 - 読み取りの利用量は `extract_logs` テーブルに記録されます（Supabase の Table Editor で確認できます）。
 
 ## 画面の更新
